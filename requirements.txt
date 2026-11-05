@@ -1,0 +1,15 @@
+numpy
+scipy
+numba
+soundfile
+soxr
+librosa
+pyloudnorm
+pedalboard>=0.9.12
+torch
+demucs
+beat_this @ git+https://github.com/CPJKU/beat_this
+fastapi
+uvicorn
+python-multipart
+sounddevice

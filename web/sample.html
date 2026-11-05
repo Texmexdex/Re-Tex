@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sample editor · Re-Tex</title>
+  <link rel="icon" type="image/png" href="/static/img/logo-32.png">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="se-body">
+  <header class="se-head">
+    <img class="se-logo" src="/static/img/logo-64.png" alt="">
+    <div class="se-title"><b id="seTitle">Sample editor</b><span id="seMeta" class="dim"></span></div>
+    <div class="se-actions">
+      <button id="seUndo" class="small" title="Undo (Ctrl+Z)" disabled>Undo</button>
+      <button id="seRedo" class="small" title="Redo (Ctrl+Y)" disabled>Redo</button>
+      <button id="seRevert" class="small" title="Back to the clip as it was (keeps nothing of the edits)">Revert</button>
+      <button id="seDone" class="small" title="Close this window">Done</button>
+      <button id="seApply" class="primary" title="Bake the edits into a sample that replaces the clip in its lane - nothing else moves. Ctrl+Z in the arrangement brings the clip back.">Apply to the clip</button>
+    </div>
+  </header>
+
+  <div class="se-transport">
+    <button id="sePlay" class="icon play" title="Play / stop (Space) - from the cursor, or the selection"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.8v10.4L13 8z" fill="currentColor"/></svg></button>
+    <button id="seLoop" class="toggle on" title="Loop the selection while playing (L)">Loop</button>
+    <span id="sePos" class="se-pos">1.1.1</span>
+    <label class="se-grid">Grid
+      <select id="seGrid" title="What a cell is: the selection snaps to it, stutters repeat it"></select></label>
+    <label class="se-chk" title="Hold Alt while dragging for no snap"><input type="checkbox" id="seSnap" checked> snap</label>
+    <span class="se-sp"></span>
+    <button id="seZoomOut" class="small" title="Zoom out (Ctrl+wheel)">−</button><button id="seZoomIn" class="small" title="Zoom in (Ctrl+wheel)">+</button><button id="seFit" class="small" title="Show it all">Fit</button>
+    <span id="seBusy" class="dim"></span>
+  </div>
+
+  <div class="se-wave"><canvas id="seCanvas"></canvas></div>
+  <div id="seSel" class="se-selbar dim">Drag across the waveform to select cells - then pick what to do with them.</div>
+
+  <div class="se-tools">
+    <section><h4>Edit</h4>
+      <div class="se-row">
+        <button data-do="copy" class="small" title="Copy the selection (Ctrl+C)">Copy</button>
+        <button data-do="paste" class="small" title="Paste over, from the selection's start (Ctrl+V)">Paste over</button>
+        <button data-do="pastemix" class="small" title="Paste on top - a layer (Ctrl+Shift+V)">Paste layered</button>
+        <button data-do="dup" class="small" title="The selection again right after itself, over what's there (Ctrl+D)">Duplicate</button>
+        <button data-do="reverse" class="small" title="Play the selection backwards (R)">Reverse</button>
+        <button data-do="silence" class="small" title="Silence the selection (Delete)">Silence</button>
+      </div>
+    </section>
+    <section><h4>Stutter</h4>
+      <div class="se-row">
+        <label>repeat <select id="seStCell"></select></label>
+        <label class="se-chk"><input type="checkbox" id="seStRoll"> roll</label>
+        <label>rise <select id="seStRise"><option value="0">none</option><option value="3">+3 st</option><option value="5">+5 st</option><option value="7">+7 st</option><option value="12">+12 st</option></select></label>
+        <label>level <select id="seStLevel"><option value="none">even</option><option value="in">swell in</option><option value="out">fade out</option></select></label>
+        <button data-do="stutter" class="small primary" title="Fill the selection with its first cell, again and again (S)">Stutter</button>
+      </div>
+    </section>
+    <section><h4>Layer</h4>
+      <div class="se-row">
+        <label>pitch <select id="seLaSemis"><option value="12">octave up</option><option value="-12">octave down</option><option value="7">fifth up</option><option value="-5">fourth down</option><option value="0" selected>same</option></select></label>
+        <label>offset <select id="seLaOff"></select></label>
+        <label>level <select id="seLaGain"><option value="0">0 dB</option><option value="-3" selected>−3 dB</option><option value="-6">−6 dB</option><option value="-12">−12 dB</option></select></label>
+        <button data-do="layer" class="small primary" title="The selection again on top of itself - pitched and / or shifted">Layer</button>
+      </div>
+    </section>
+    <section><h4>Echo / delay</h4>
+      <div class="se-row">
+        <label>time <select id="seEcTime"></select></label>
+        <label>feedback <input type="range" id="seEcFb" min="0" max="0.9" step="0.05" value="0.45"><span class="se-v"></span></label>
+        <label>mix <input type="range" id="seEcMix" min="0" max="1.2" step="0.05" value="0.6"><span class="se-v"></span></label>
+        <label>tone <input type="range" id="seEcTone" min="0" max="1" step="0.05" value="0.5"><span class="se-v"></span></label>
+        <label class="se-chk" title="Tape echo: repeats wander (wow and flutter), saturate and darken"><input type="checkbox" id="seEcTape" checked> tape</label>
+        <label class="se-chk" title="The original stops at the end of the selection; only the echoes carry on"><input type="checkbox" id="seEcOut"> echo out</label>
+        <button data-do="echo" class="small primary" title="Send the selection into the delay; the repeats ring on past it">Echo</button>
+      </div>
+    </section>
+    <section><h4>Tape · pitch · level</h4>
+      <div class="se-row">
+        <button data-do="tapestop" class="small" title="Slow to a stop across the selection, pitch with it">Tape stop</button>
+        <button data-do="tapestart" class="small" title="Spin up from nothing across the selection, landing where the audio carries on">Tape start</button>
+        <span class="se-gap"></span>
+        <label>pitch <select id="sePiSemis"></select></label>
+        <select id="sePiMode"><option value="keep">keep length</option><option value="vari">varispeed</option></select>
+        <button data-do="pitch" class="small">Pitch</button>
+        <span class="se-gap"></span>
+        <label>level <select id="seGaDb"><option value="6">+6 dB</option><option value="3">+3 dB</option><option value="-3">−3 dB</option><option value="-6" selected>−6 dB</option><option value="-12">−12 dB</option></select></label>
+        <select id="seGaShape"><option value="flat">flat</option><option value="in">fade in</option><option value="out">fade out</option></select>
+        <button data-do="gain" class="small">Level</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="se-list"><b>Edits</b> <span class="dim">(in order - × takes one out, the rest stay)</span><div id="seOps"></div></div>
+  <div id="toastHost" class="se-toasts"></div>
+  <script type="module" src="/static/js/sampler.js"></script>
+</body>
+</html>

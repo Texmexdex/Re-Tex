@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Beat grid · Re-Tex</title>
+  <link rel="icon" type="image/png" href="/static/img/logo-32.png">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="se-body">
+  <header class="se-head">
+    <img class="se-logo" src="/static/img/logo-64.png" alt="">
+    <div class="se-title"><b id="gTitle">Beat grid</b><span id="gMeta" class="dim"></span></div>
+    <div class="se-actions">
+      <button id="gUndo" class="small" title="Undo (Ctrl+Z)" disabled>Undo</button>
+      <button id="gRedo" class="small" title="Redo (Ctrl+Y)" disabled>Redo</button>
+      <span id="gSaved" class="dim"></span>
+      <button id="gSaveProj" class="small" hidden>Save for this project only</button>
+      <button id="gSave" class="primary" title="Save as the song's grid (Ctrl+S): projects from now on use it, and the project you opened this from; saved projects keep the grid they had">Save as the song's grid</button>
+      <button id="gDone" class="small" title="Close this window (asks first if there's anything unsaved)">Done</button>
+    </div>
+  </header>
+
+  <div class="se-transport">
+    <button id="gPlay" class="icon play" title="Play / pause (Space) - click the waveform to move the playhead"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.8v10.4L13 8z" fill="currentColor"/></svg></button>
+    <span id="gPos" class="se-pos">0:00.00</span>
+    <label class="se-grid">speed <select id="gSpeed"><option value="1">100% (as recorded)</option><option value="0.85">85%</option><option value="0.75">75%</option><option value="0.5">50%</option></select></label>
+    <label class="se-chk" title="The metronome clicks on the marks: high on each 4-bar phrase, middle on each bar's 1, soft on the other beats"><input type="checkbox" id="gClick" checked> metronome</label>
+    <label class="se-row-l">click <input type="range" id="gClickVol" min="0" max="1" step="0.05" value="0.6"></label>
+    <label class="se-row-l">song <input type="range" id="gSongVol" min="0" max="1" step="0.05" value="0.8"></label>
+    <span class="se-sp"></span>
+    <label class="se-row-l" title="Your sound reaches you this much after the page plays it (headsets, Bluetooth...). The picture is held back by the same amount, so the playhead moves with what you hear. The song and the clicks are never apart: they come out together.">audio delay <input type="range" id="gDelay" min="0" max="900" step="10" value="0"><span id="gDelayV" class="se-v"></span></label>
+    <button id="gZoomOut" class="small" title="Zoom out (Ctrl+wheel)">−</button><button id="gZoomIn" class="small" title="Zoom in (Ctrl+wheel)">+</button><button id="gFit" class="small">Fit</button>
+    <label class="se-chk"><input type="checkbox" id="gFollow" checked> follow</label>
+  </div>
+
+  <div class="se-wave"><canvas id="gCanvas"></canvas></div>
+  <div id="gHint" class="se-selbar dim">Play it and listen to the clicks against the drums. A bar's beats stay evenly spread between its bar lines, and nothing before the mark you drag moves.
+    <b>Drag</b> a bar line: the bar before it squeezes or stretches, everything after moves with it · <b>Ctrl+drag</b> a bar line: only the bars either side change · <b>drag</b> a beat: its bar's tempo, the rest moves along · <b>Ctrl+drag</b> a beat: only that beat · <b>Shift+drag</b>: everything · click a mark + <b>Del</b>: delete it (the bar re-spreads, 4 beats to 3) · <b>double-click</b> a mark: bar's 1 / plain beat · double-click elsewhere: add a beat.</div>
+
+  <div class="se-tools">
+    <section><h4>Everything</h4>
+      <div class="se-row">
+        <span class="dim">clicks earlier</span>
+        <button class="small" data-all="-0.01">−10 ms</button><button class="small" data-all="-0.002">−2 ms</button>
+        <button class="small" data-all="0.002">+2 ms</button><button class="small" data-all="0.01">+10 ms</button>
+        <span class="dim">later</span>
+      </div>
+    </section>
+    <section><h4>From the playhead on</h4>
+      <div class="se-row">
+        <button class="small" data-from="-0.01">−10 ms</button><button class="small" data-from="-0.002">−2 ms</button>
+        <button class="small" data-from="0.002">+2 ms</button><button class="small" data-from="0.01">+10 ms</button>
+        <span class="se-gap"></span>
+        <button class="small" data-one="-1" title="The bar starts one beat earlier from the playhead on">1 a beat earlier</button>
+        <button class="small" data-one="1" title="The bar starts one beat later from the playhead on">1 a beat later</button>
+      </div>
+    </section>
+    <section><h4>Bars</h4>
+      <div class="se-row">
+        <button id="gEven" class="small" title="Spread the beats of every uneven bar evenly between its two bar lines (bars where you placed a beat yourself are left as they are). Ctrl+Z undoes.">Even out uneven bars</button>
+        <button id="gNextUneven" class="small" title="Jump to the next bar whose beats aren't evenly spread">Next uneven bar</button>
+        <span id="gUneven" class="dim"></span>
+      </div>
+    </section>
+    <section><h4>Repair</h4>
+      <div class="se-row">
+        <button id="gRepair" class="small primary" title="Rebuild the grid from the detector's beats on one steady pulse: where it counted half or double time, re-counted; each beat put on its drum hit. Stretches the drums can't confirm show amber. Undo brings back what you had.">Repair from the detector</button>
+        <span id="gRepairMsg" class="dim"></span>
+      </div>
+    </section>
+    <section><h4>4-bar phrases (the high clicks)</h4>
+      <div class="se-row">
+        <button class="small" data-phrase="-1">start a bar earlier</button>
+        <button class="small" data-phrase="1">start a bar later</button>
+      </div>
+    </section>
+  </div>
+  <div id="toastHost" class="se-toasts"></div>
+  <script type="module" src="/static/js/gridtool.js"></script>
+</body>
+</html>

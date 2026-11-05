@@ -1,0 +1,10 @@
+# Music Flamingo's own environment (.venv-listen), Python 3.13. Re-Tex starts it as a separate process, so its
+# newer transformers never meets the app's. PyTorch first, from the CUDA 12.8 index (install.ps1):
+#   torch==2.11.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+transformers==5.19.0
+xgrammar==0.2.8
+accelerate==1.15.0
+librosa==1.0.0
+soundfile==0.14.0
+huggingface_hub==2.2.0
+numpy==2.5.4

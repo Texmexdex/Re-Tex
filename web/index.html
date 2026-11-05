@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Re-Tex</title>
+<link rel="icon" href="/static/img/retex.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="64x64" href="/static/img/logo-64.png">
+<link rel="apple-touch-icon" href="/static/img/logo-256.png">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand"><img class="logo" src="/static/img/logo-128.png" srcset="/static/img/logo-128.png 1x, /static/img/logo-256.png 2x" alt=""><span>Re-Tex</span></div>
+    <input id="projName" class="proj-name" spellcheck="false" value="Untitled mashup" title="Project name">
+    <div class="transport">
+      <button id="btnStart" class="icon" title="Back to start (Home)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3v10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3.2v9.6L5.8 8z" fill="currentColor"/></svg></button>
+      <button id="btnPlay" class="icon play" title="Play / stop (Space)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.8v10.4L13 8z" fill="currentColor"/></svg></button>
+      <div class="clock"><span id="clockTime">0:00.0</span><span id="clockBar">1.1</span></div>
+      <label class="bpm" title="Project tempo - everything is warped to this">
+        <input id="bpmInput" type="number" min="40" max="250" step="0.5" value="120"><span>BPM</span>
+      </label>
+      <select id="screwSel" title="Screw (chopped &amp; screwed): the whole mix slower, its pitch dropping with it - drums too, like a slowed turntable"></select>
+      <button id="btnLoop" class="toggle" title="Loop region (L) - drag on the ruler to set it"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 7.2V6.5A2.5 2.5 0 0 1 5.3 4h7.4M10.7 2l2 2-2 2M13.2 8.8v.7A2.5 2.5 0 0 1 10.7 12H3.3M5.3 14l-2-2 2-2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Loop</span></button>
+      <button id="btnClick" class="toggle" title="Metronome (K): clicks on the mix's grid while it plays - high on every 4th bar, middle on each bar's 1, soft on the beats - to hear whether each song's beats sit on the grid. Right-click for its level. Never in an export."><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.5h4l2.8 11H3.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 11L11.8 4.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg><span>Click</span></button>
+      <button id="btnFollow" class="toggle" title="Follow the playhead: the timeline scrolls along while playing (P). It always waits 3 s after you touch the timeline."><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8h8M8 5l3 3-3 3M13.5 3v10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Follow</span></button>
+      <label class="vol" title="Monitor volume"><span><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2.4L8 3.2v9.6L4.9 10H2.5z" fill="currentColor"/><path d="M10.6 5.6a3.4 3.4 0 0 1 0 4.8M12.4 3.9a5.8 5.8 0 0 1 0 8.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span><input id="volume" type="range" min="0" max="1.5" step="0.01" value="1"></label>
+    </div>
+    <div class="actions">
+      <div class="undo-group">
+        <button id="btnUndo" class="icon" title="Undo (Ctrl+Z)" disabled><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5L2.5 6.5l3 3M2.8 6.5h7a3.5 3.5 0 0 1 0 7H7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button id="btnRedo" class="icon" title="Redo (Ctrl+Y)" disabled><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3.5l3 3-3 3M13.2 6.5h-7a3.5 3.5 0 0 0 0 7H9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      <button id="btnMashup" class="primary" title="Pick songs, get ready-made mashups">Auto-Mashup</button>
+      <button id="btnDj" class="primary" title="Two songs + what you want: a language model plans the mix like a DJ, the engine plays it in time">DJ Mix</button>
+      <button id="btnReimagine" class="primary" title="YuE2 re-sings and re-instruments the open mix as one new production; keep the takes you like as songs with stems">Reimagine</button>
+      <button id="btnProjects" title="Open / new project">Projects</button>
+      <button id="btnSave" title="Save (Ctrl+S)">Save</button>
+      <button id="btnBranch" title="Keep this project exactly as it is now and carry on in a copy of it (a branch)">Branch</button>
+      <button id="btnExport" title="Render the arrangement to a file">Export</button>
+      <button id="btnListen" class="icon listen" hidden title="Listening: test results to hear and weigh in on"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 10V8a5.5 5.5 0 0 1 11 0v2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><rect x="2" y="9.2" width="3" height="4.3" rx="1" fill="currentColor"/><rect x="11" y="9.2" width="3" height="4.3" rx="1" fill="currentColor"/></svg><span class="badge"></span></button>
+      <button id="btnSettings" class="icon" title="Settings: where the library and exports live"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M2.5 11.5h11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6" cy="4.5" r="1.8" fill="var(--panel)" stroke="currentColor" stroke-width="1.4"/><circle cx="10.5" cy="11.5" r="1.8" fill="var(--panel)" stroke="currentColor" stroke-width="1.4"/></svg></button>
+    </div>
+  </header>
+
+  <aside id="library">
+    <div class="lib-head">
+      <h2>Your Library <span id="libCount" class="lib-count"></span></h2>
+      <div class="row-gap"><button id="btnFolder" class="small" title="New folder (Ctrl/Shift+click songs first to put them straight in it)">+ Folder</button><button id="btnAdd" class="small primary" title="Add songs (or drop audio files anywhere)">+ Add</button></div>
+    </div>
+    <div id="libChips" class="chips" title="Group the library by"></div>
+    <input id="libSearch" class="search" placeholder="Search songs…" spellcheck="false">
+    <div id="songList"></div>
+    <div class="lib-foot">Drop audio files anywhere to add them. Drag songs onto a folder (Ctrl/Shift+click to pick several).</div>
+  </aside>
+
+  <main id="main">
+    <div id="projSongs"></div>
+    <div id="timelineWrap">
+      <div id="trackHeaders"></div>
+      <div id="tlScroll">
+        <canvas id="timeline"></canvas>
+      </div>
+    </div>
+    <div id="splitter" title="Drag to resize"></div>
+    <section id="inspector">
+      <div id="inspEmpty" class="empty-hint">
+        <div class="big">Start here</div>
+        <p><b>Fastest:</b> add 2+ songs, then hit <b>Auto-Mashup</b> - it finds the best vocal/instrumental pairings,
+          key and tempo, and builds a full arrangement you can play and tweak.</p>
+        <p><b>By hand:</b> click a song in the library to open it here, audition its sections, and drag
+          sections (or single stems) onto the timeline. Everything snaps to the beat and plays in time and in key.</p>
+      </div>
+      <div id="songView" hidden>
+        <div class="sv-head">
+          <div class="sv-title"><span id="svTitle"></span><span id="svMeta" class="meta"></span><span id="svMeterHint" class="meta"></span></div>
+          <div class="sv-tools">
+            <span class="hint">Click = hear · drag = place · drag the bar ruler to pick any bars · Ctrl+wheel = zoom</span>
+            <span id="svWhole" class="sv-whole" title="The whole song, one clip per section (named after it): drag onto the timeline, or click to add it at the playhead. Then delete the sections you don't want.">Whole song:<button class="small wh" data-stem="all">all</button><button class="small wh" data-stem="drums">drums</button><button class="small wh" data-stem="bass">bass</button><button class="small wh" data-stem="other">other</button><button class="small wh" data-stem="vocals">vocals</button></span>
+            <button id="svZoomOut" class="small" title="Zoom out (Ctrl+wheel)">−</button><button id="svZoomIn" class="small" title="Zoom in (Ctrl+wheel)">+</button><button id="svFit" class="small" title="Show the whole song">Fit</button>
+            <button id="svGrid" class="small" title="Line the beat marks up by ear: the song and a metronome on its marks, in a window of their own (your audio delay can't pull them apart)"><span>Beat grid</span></button>
+            <button id="svLyrics" class="small" title="Type this song's lyrics once: every word is lined up with its vocals and saved with the song - the lyrics overlay, the song form and Reimagine use yours instead of Whisper's guess"><span>Lyrics</span></button>
+            <button id="svMatch" class="small" title="Rank every other song by how well it fits this one"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.2 10.2L13.5 13.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Find matches</span></button>
+            <button id="svDownPrev" class="small" title="Downbeat is wrong? shift bar lines 1 beat earlier">◀ bar</button>
+            <button id="svDownNext" class="small" title="Shift bar lines 1 beat later">bar ▶</button>
+            <button id="svStop" class="small" title="Stop audition (Esc)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="0.5" fill="currentColor"/></svg><span>Stop</span></button>
+          </div>
+        </div>
+        <div id="svHeard" class="sv-heard" hidden></div>
+        <canvas id="songCanvas"></canvas>
+      </div>
+      <div id="clipView" hidden></div>
+    </section>
+  </main>
+
+  <footer id="status">
+    <div id="jobs"></div>
+    <div id="statusMsg"></div>
+  </footer>
+</div>
+
+<div id="dropOverlay" hidden><div>Drop songs to add them</div></div>
+<div id="modalRoot"></div>
+<div id="ctxMenu" hidden></div>
+<div id="toast" hidden></div>
+<input id="fileInput" type="file" accept="audio/*,video/*,.flac,.wav,.mp3,.m4a,.ogg,.opus,.aiff" multiple hidden>
+
+<script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

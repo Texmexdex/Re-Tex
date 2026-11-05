@@ -1,0 +1,21 @@
+# Your library (songs, stems, projects, renders, settings) is yours, never part of the repository.
+data/
+settings.json
+listening/
+
+# Python environments and caches (install.bat makes them)
+.venv*/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Downloaded model files (install.bat fetches them; see models/README.md)
+models/*
+!models/README.md
+
+# Scratch
+_*.log
+_*.txt
+*.tmp
+*.part
+_build/

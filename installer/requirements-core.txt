@@ -1,0 +1,28 @@
+# Re-Tex core, Python 3.13 - the versions it's tested with. PyTorch is installed first, from the CUDA 12.8 index
+# (install.ps1): torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+numpy==2.2.6
+scipy==1.17.1
+numba==0.65.0
+soundfile==0.14.0
+soxr==1.0.0
+librosa==0.11.0
+pyloudnorm==0.2.0
+pedalboard==0.9.23
+demucs==4.0.1
+beat-this==1.1.0
+fastapi==0.141.1
+uvicorn==0.52.4
+python-multipart==0.0.32
+sounddevice==0.5.6
+PyYAML==6.0.3
+threadpoolctl==3.6.0
+einops==0.8.2
+rotary-embedding-torch==0.9.1
+packaging
+faster-whisper==1.2.1
+ctranslate2==4.8.1
+huggingface_hub==0.36.2
+transformers==4.46.3
+sentence-transformers==2.7.0
+pytest
+httpx==0.28.1
