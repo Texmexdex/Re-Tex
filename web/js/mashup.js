@@ -1,4 +1,5 @@
-// Auto-Mashup: pick songs (or candidates per role) -> ranked, ready-to-play arrangements.
+// Auto-Mashup: pick stems song by song -> one editable project (gridmash); or pick songs (or candidates per role)
+// -> ranked, ready-to-play arrangements.
 import { api } from "./api.js";
 import { S, on, setProject, toast } from "./state.js";
 import { modal } from "./ui.js";
@@ -14,13 +15,19 @@ const sel = {
   quick: new Set(saved.quick || []),
   vocals: new Set(saved.vocals || []), music: new Set(saved.music || []),
   drums: new Set(saved.drums || []), bass: new Set(saved.bass || []),
+  grid: new Set(saved.grid || []),
 };
-const opts = Object.assign({ mode: "quick", vocalsOwn: false, vocalsNone: false, drumsOwn: true, bassOwn: true, density: 0.5, lyricsMode: "off" }, saved.opts || {});
+const opts = Object.assign({ mode: "grid", vocalsOwn: false, vocalsNone: false, drumsOwn: true, bassOwn: true, density: 0.5, lyricsMode: "off",
+  gmFollow: "stretch", gmTurns: true, gmGrids: true }, saved.opts || {});
+if (!saved.gridSeen) opts.mode = "grid";             // the Pick stems tab is where the dialog opens the first time
 const collapsed = new Set(saved.collapsed || []);
+// Pick stems: per song which stems are ticked and how it lines up, and which song is the master ("" = worked out)
+const gm = { picks: saved.gridPicks || {}, master: saved.gridMaster || "" };
 function persist() {
   try {
     localStorage.setItem("mashupPicks", JSON.stringify({
       ...Object.fromEntries(Object.entries(sel).map(([k, v]) => [k, [...v]])), opts, collapsed: [...collapsed],
+      gridPicks: gm.picks, gridMaster: gm.master, gridSeen: true,
     }));
   } catch {}
 }
@@ -29,7 +36,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 
 /** Folder-grouped checklist. Folder checkbox = whole folder on/off (indeterminate when partly picked). */
 function picker(el, set, { onlyVocals = false, key, onChange } = {}) {
-  const ready = [...S.songs.values()].filter((s) => s.status === "ready" && s.kind !== "sample");
+  const ready = [...S.songs.values()].filter((s) => s.status === "ready" && s.kind !== "sample" && s.kind !== "midi");
   for (const id of [...set]) if (!S.songs.has(id)) set.delete(id);
   el.innerHTML = `<div class="pk-tools"><input class="pk-search" placeholder="filter…" spellcheck="false">
     <button class="small pk-all" title="Select every song shown">all</button><button class="small pk-none" title="Clear">none</button>
@@ -82,11 +89,28 @@ function picker(el, set, { onlyVocals = false, key, onChange } = {}) {
 }
 
 export function openMashup() {
-  const ready = [...S.songs.values()].filter((s) => s.status === "ready" && s.kind !== "sample");
+  const ready = [...S.songs.values()].filter((s) => s.status === "ready" && s.kind !== "sample" && s.kind !== "midi");
   if (ready.length < 2) { toast("Add at least two songs first (one with vocals)", true); return; }
   if (!sel.quick.size) ready.forEach((s) => sel.quick.add(s.id));
   m = modal("Auto-Mashup", `
-    <div class="tabs"><button data-tab="quick">Every pairing</button><button data-tab="roles">By roles</button></div>
+    <div class="tabs"><button data-tab="grid">Pick stems</button><button data-tab="quick">Every pairing</button><button data-tab="roles">By roles</button></div>
+    <div class="tab-grid">
+      <p class="lead">Tick the stems you want from each song. One song is the <b>master</b>: it plays as recorded and its
+        bars are the grid. Every other stem is fitted to it - tempo, key, and a different time signature too - and vocals
+        go on whole lines, never cut inside a word. You get an ordinary project, one lane per stem, to move, trim and
+        level like any other.</p>
+      <details class="pk-wrap" id="pkGridWrap"><summary>Songs in play: <b id="pkGridN"></b> <span class="dim">(click to add or remove)</span></summary>
+        <div class="picker big" id="pkGrid"></div></details>
+      <div class="gm" id="gmRows"></div>
+      <div class="opts gm-opts">
+        <label title="Two songs never keep exactly the same time. Stretch: a fitted song is sped up or slowed down a little, in long stretches, so it stays with the master - its audio is never cut. Cut: nothing is stretched; the song is moved back onto a bar line whenever it has slid (a small jump in its audio).">Staying in time
+          <select id="gmFollow"><option value="stretch">stretch to follow the master (no cuts)</option><option value="cut">cut back onto bar lines (no stretching)</option></select></label>
+        <label class="opt" id="gmTurnsWrap" title="With two or more guest singers: the one with the clearest hook sings the master's choruses, the others take its verses in turn - each kept inside its section. Off: their lines are dealt out one block after another."><input type="checkbox" id="gmTurns"> singers take turns by section (one gets the choruses)</label>
+        <label class="opt" title="A song's automatic beat grid sometimes counts a stretch in half or double time, or loses the beat for a while. On: for this mix those stretches are put back on the pulse of the stretch next to them (checked against the audio). The song's own grid is never changed, and a grid you marked yourself is always used as it is."><input type="checkbox" id="gmGrids"> put shaky beat grids right for this mix</label>
+      </div>
+      <div class="opts"><button id="gmGo" class="primary">Build the mashup</button><span id="gmProg" style="color:var(--dim)"></span></div>
+      <div class="gm-result" id="gmResult"></div>
+    </div>
     <div class="tab-quick">
       <p class="lead">Every song's vocal is arranged over every other song's music and the finished arrangement is rated -
         harmony note by note, tempo &amp; key changes, structure, groove, acapella quality. Duplicates, alternate versions and
@@ -114,7 +138,7 @@ export function openMashup() {
           <div class="picker" id="pkBass"></div></div>
       </div>
     </div>
-    <div class="opts">
+    <div class="opts" id="rateOpts">
       <label title="How much of the arrangement carries the vocal">Vocal density
         <input type="range" id="dens" min="0" max="1" step="0.05" value="${opts.density}"><span id="densV"></span></label>
       <label title="Factor the two songs' lyrics into the rating. Resonance rewards lyrics that say the same thing; Contrast (secondary) rewards opposites. Off = music only (the default, unchanged rating). Only engages once both songs have been transcribed.">Lyrics
@@ -126,19 +150,21 @@ export function openMashup() {
       <button id="go" class="primary">Rate every pairing</button>
       <span id="prog" style="color:var(--dim)"></span>
     </div>
-    <details class="auto-mashup" id="autoWrap">
-      <summary>Auto-Mashup (2 songs → finished)</summary>
-      <p class="lead">Pick exactly two songs above (Every-pairing list), add a style word, and the whole mashup is
-        built end to end — separated, analysed, transcribed, aligned, blended and assembled — into a normal,
-        editable project. Leave the style empty for an even 50/50.</p>
-      <div class="row-gap">
-        <input type="text" id="autoStyle" placeholder="style… e.g. remix · chopped and screwed · workout hype · contrast (or blank = 50/50)" spellcheck="false" style="flex:1">
-        <button id="autoGo" class="primary">Build it</button>
-      </div>
-      <span id="autoProg" style="color:var(--dim)"></span>
-    </details>
     <div class="variants" id="variants"></div>`, { wide: true, onClose: () => (m = null) });
   const B = m.body;
+  const pkG = () => { B.querySelector("#pkGridN").textContent = sel.grid.size ? `${sel.grid.size} song${sel.grid.size > 1 ? "s" : ""}` : "none yet"; };
+  picker(B.querySelector("#pkGrid"), sel.grid, { key: "g", onChange: () => { pkG(); drawGrid(); } });
+  pkG();
+  if (!sel.grid.size) B.querySelector("#pkGridWrap").open = true;
+  B.querySelector("#gmGo").onclick = buildGrid;
+  const gf = B.querySelector("#gmFollow");
+  gf.value = opts.gmFollow === "cut" ? "cut" : "stretch";
+  gf.onchange = () => { opts.gmFollow = gf.value; persist(); };
+  for (const [id, k] of [["#gmTurns", "gmTurns"], ["#gmGrids", "gmGrids"]]) {
+    const c = B.querySelector(id);
+    c.checked = opts[k] !== false;
+    c.onchange = () => { opts[k] = c.checked; persist(); };
+  }
   const pkN = () => { B.querySelector("#pkN").textContent = `${sel.quick.size} of ${ready.length} songs`; };
   picker(B.querySelector("#pkQuick"), sel.quick, { key: "q", onChange: () => { pkN(); loadTable(); } });
   pkN();
@@ -151,11 +177,13 @@ export function openMashup() {
   const setTab = (t) => {
     opts.mode = t; persist();
     B.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === t));
+    B.querySelector(".tab-grid").hidden = t !== "grid";
     B.querySelector(".tab-quick").hidden = t !== "quick";
     B.querySelector(".tab-roles").hidden = t !== "roles";
+    B.querySelector("#rateOpts").hidden = t === "grid";
     B.querySelector("#go").textContent = t === "quick" ? "Rate every pairing" : "Build & rate every combination";
     B.querySelector("#variants").innerHTML = "";
-    if (t === "quick") loadTable(); else if (lastResults) showVariants(lastResults);
+    if (t === "grid") drawGrid(); else if (t === "quick") loadTable(); else if (lastResults) showVariants(lastResults);
   };
   B.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => setTab(b.dataset.tab));
   const dens = B.querySelector("#dens"), densV = B.querySelector("#densV");
@@ -167,21 +195,139 @@ export function openMashup() {
   lyr.value = opts.lyricsMode || "off";
   lyr.onchange = () => { opts.lyricsMode = lyr.value; persist(); if (opts.mode === "quick") loadTable(); };
   B.querySelector("#go").onclick = go;
-  B.querySelector("#autoGo").onclick = autoMashup;
-  setTab(opts.mode);
+  setTab(["grid", "quick", "roles"].includes(opts.mode) ? opts.mode : "grid");
   if (pendingJob) B.querySelector("#prog").innerHTML = '<span class="spinner"></span> still working…';
 }
 
-// Auto-Mashup: two picked songs + a style word -> POST /api/mashup/auto -> a finished, editable project.
-async function autoMashup() {
-  const B = m.body, prog = B.querySelector("#autoProg");
-  const songs = [...sel.quick];
-  if (songs.length !== 2) { toast("Pick exactly two songs in the Every-pairing list for Auto-Mashup", true); return; }
-  const prompt = B.querySelector("#autoStyle").value.trim();
-  prog.innerHTML = '<span class="spinner"></span> starting the full build…';
-  try {
-    pendingJob = (await api.post("/api/mashup/auto", { songs, prompt, density: opts.density })).id;
-  } catch (e) { prog.textContent = e.message; toast(e.message, true); }
+// ------------------------------------------------------------------ Pick stems (gridmash.py, /api/mashup/grid)
+// Any stems from any songs, fitted to one master song. This replaced the old "2 songs -> finished" builder: what
+// it makes is a plain project (a lane per stem), so the arranged stems stay editable and every lane has its fader.
+
+const GM_STEMS = ["drums", "bass", "other", "vocals"];
+const gmSongs = () => [...sel.grid].map((id) => S.songs.get(id)).filter(Boolean);
+const gmPick = (id) => (gm.picks[id] ||= { stems: [], fit: "auto" });
+// the song that brings chords and bass carries the bar structure (the same rule as gridmash.pick_master)
+function gmMaster() {
+  const rows = gmSongs().filter((s) => gmPick(s.id).stems.length);
+  if (gm.master && rows.some((s) => s.id === gm.master)) return gm.master;
+  const score = (s) => {
+    const st = gmPick(s.id).stems;
+    return [st.filter((x) => x === "other" || x === "bass").length, st.includes("other") ? 1 : 0, st.length];
+  };
+  const better = (a, b) => { for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return a[k] > b[k]; return false; };
+  let best = null;
+  for (const s of rows) if (!best || better(score(s), score(best))) best = s;      // a tie keeps the earlier song
+  return best ? best.id : null;
+}
+
+// About how much faster / slower a song will play to meet the master's tempo (the same choice as gridmash.tempo_fit,
+// from the stored tempos - the build reports the exact figure).
+function gmSpeed(s, master, fit) {
+  if (!s.bpm || !master.bpm) return null;
+  const cands = [0.5, 1, 2].map((x) => [x, "beat"]);
+  const sb = s.bpb || 4, mb = master.bpb || 4;
+  if (sb !== mb) for (const rho of [0.5, 1, 2]) {
+    const x = mb / (sb * rho);
+    if (x >= 0.2 && x <= 4 && cands.every((c) => Math.abs(c[0] - x) > 1e-6)) cands.push([x, "bar"]);
+  }
+  const pool = (fit === "beat" || fit === "bar") && cands.some((c) => c[1] === fit) ? cands.filter((c) => c[1] === fit) : cands;
+  const cost = (c) => Math.abs(Math.log(master.bpm / (s.bpm * c[0]))) + (c[1] === "bar" ? 0.03 : 0);
+  const best = pool.reduce((a, c) => (cost(c) < cost(a) ? c : a));
+  return (master.bpm / (s.bpm * best[0]) - 1) * 100;
+}
+
+function drawGrid() {
+  if (!m) return;
+  const box = m.body.querySelector("#gmRows");
+  const songs = gmSongs();
+  for (const id of Object.keys(gm.picks)) if (!sel.grid.has(id)) delete gm.picks[id];
+  if (!songs.length) { box.innerHTML = `<div class="folder-empty">Add two or more songs above, then tick the stems to take from each.</div>`; return; }
+  // a fresh pair starts as the usual shape: music + vocal from the first song, drums from the second
+  if (songs.length >= 2 && songs.every((s) => !gmPick(s.id).stems.length)) {
+    gmPick(songs[0].id).stems = ["bass", "other", ...(songs[0].has_vocals ? ["vocals"] : [])];
+    gmPick(songs[1].id).stems = ["drums"];
+  }
+  const master = gmMaster();
+  const mSong = master ? S.songs.get(master) : null;
+  const mb = mSong ? mSong.bpb : null;
+  const guests = songs.filter((s) => s.id !== master && gmPick(s.id).stems.includes("vocals")).length;
+  m.body.querySelector("#gmTurnsWrap").hidden = guests < 2;
+  box.innerHTML = `<div class="gm-row head"><span>Master</span><span>Song</span>${GM_STEMS.map((st) => `<span><i class="sd ${st}"></i>${st}</span>`).join("")}<span title="How a song in another time signature meets the master's bars">Lining up</span></div>`;
+  for (const s of songs) {
+    const p = gmPick(s.id), isM = s.id === master;
+    const row = document.createElement("div");
+    row.className = "gm-row" + (isM ? " master" : "");
+    const other = mb && s.bpb !== mb;
+    const sp = !isM && mSong && p.stems.length ? gmSpeed(s, mSong, other ? p.fit : "auto") : null;
+    const spTag = sp == null ? "" : `<span class="tag sp${Math.abs(sp) > 12 ? " far" : ""}" title="About how much ${sp > 0 ? "faster" : "slower"} than recorded this song will play to meet the master's tempo${Math.abs(sp) > 12 ? " - that much is heard. Making this song the master, or picking a master closer to its tempo, avoids it." : ""}">${Math.abs(sp) < 0.5 ? "same tempo" : `${sp > 0 ? "+" : "−"}${Math.abs(sp).toFixed(0)}%`}</span>`;
+    row.innerHTML = `<label class="gm-m" title="The master plays as recorded; its bars are the grid everything else is fitted to"><input type="radio" name="gmMaster" ${isM ? "checked" : ""}></label>
+      <span class="gm-t"><b></b><span class="tag">${Math.round(s.bpm)}</span><span class="tag${other ? " odd" : ""}" title="beats in a bar">${s.bpb || 4}/bar</span><span class="tag key">${s.key?.camelot || ""}</span>${spTag}</span>
+      ${GM_STEMS.map((st) => `<label class="gm-s"><input type="checkbox" data-st="${st}" ${p.stems.includes(st) ? "checked" : ""}></label>`).join("")}
+      <select class="gm-fit" ${isM || !other ? "disabled" : ""} title="${isM ? "The master is the grid" : other ? "Beats line up: beat for beat, each bar dropping or repeating beats to fit. Bars line up: a whole bar over a whole bar (a cross-rhythm, e.g. a triplet feel)." : "Same time signature as the master: nothing to choose"}">
+        <option value="auto">${isM ? "the grid" : other ? "auto" : "same meter"}</option><option value="beat">beats line up</option><option value="bar">bars line up</option></select>`;
+    row.querySelector(".gm-t b").textContent = s.title;
+    row.querySelector(".gm-t").title = s.title;
+    row.querySelector(".gm-m input").onchange = () => { gm.master = s.id; persist(); drawGrid(); };
+    row.querySelectorAll(".gm-s input").forEach((cb) => {
+      if (cb.dataset.st === "vocals" && !s.has_vocals) cb.parentElement.title = "No clear vocal was found in this song";
+      cb.onchange = () => {
+        p.stems = GM_STEMS.filter((st) => (st === cb.dataset.st ? cb.checked : p.stems.includes(st)));
+        if (!p.stems.length && gm.master === s.id) gm.master = "";
+        persist(); drawGrid();
+      };
+    });
+    const fitSel = row.querySelector(".gm-fit");
+    fitSel.value = isM || !other ? "auto" : p.fit || "auto";
+    fitSel.onchange = () => { p.fit = fitSel.value; persist(); drawGrid(); };
+    box.appendChild(row);
+  }
+}
+
+async function buildGrid() {
+  const B = m.body, prog = B.querySelector("#gmProg"), out = B.querySelector("#gmResult");
+  const picks = gmSongs().map((s) => ({ song: s.id, stems: gmPick(s.id).stems })).filter((p) => p.stems.length);
+  if (!picks.length) { toast("Tick at least one stem", true); return; }
+  const fits = Object.fromEntries(picks.map((p) => [p.song, gmPick(p.song).fit || "auto"]));
+  out.innerHTML = "";
+  prog.innerHTML = '<span class="spinner"></span> reading the songs and fitting them…';
+  B.querySelector("#gmGo").disabled = true;
+  let res;
+  const o = { follow: opts.gmFollow === "cut" ? "cut" : "stretch", turns: opts.gmTurns !== false, grids: opts.gmGrids === false ? "asis" : "fix" };
+  try { res = await api.post("/api/mashup/grid", { picks, master: gmMaster(), fits, opts: o }); }
+  catch (e) { prog.textContent = e.message; toast(e.message, true); return; }
+  finally { if (m) B.querySelector("#gmGo").disabled = false; }
+  if (!m) return;
+  prog.textContent = "";
+  showGrid(res);
+}
+
+const gmPct = (v) => (Math.abs(v) < 0.05 ? "as recorded" : `${v > 0 ? "+" : "−"}${Math.abs(v).toFixed(1)}% speed`);
+const gmKey = (v) => (v ? `${v > 0 ? "+" : "−"}${Math.abs(v)} st` : "key kept");
+function showGrid(res) {
+  const d = res.desc, out = m.body.querySelector("#gmResult");
+  const line = (L) => {
+    const bits = [];
+    if (L.role === "master") bits.push("the grid, as recorded");
+    else {
+      bits.push(gmPct(L.stretch));
+      if (L.stems.some((s) => s !== "drums")) bits.push(gmKey(L.shift));
+      if (L.bpb !== d.bpb) bits.push(L.beats ? `beats line up - each bar plays its beats ${L.beats.join(" ")}` : L.fit === "bar" ? "bars line up (its beats cross the master's)" : "beats line up");
+      if (L.part) bits.push(L.part === "chorus" ? "sings the choruses" : "sings the verses");
+      if (L.lines != null) bits.push(`${L.lines} line${L.lines === 1 ? "" : "s"} placed${L.left_out ? `, ${L.left_out} left out` : ""}`);
+      if (L.follows) bits.push(`follows the master in ${L.follows} stretch${L.follows === 1 ? "" : "es"}`);
+      if (L.cuts) bits.push(`cut back into time ${L.cuts} time${L.cuts === 1 ? "" : "s"}`);
+      if (!L.follows && !L.cuts && L.stems.some((s) => s !== "vocals")) bits.push("stays in time on its own");
+    }
+    return `<div class="rl"><span class="rn">${L.role === "master" ? "master" : "fitted"}</span><b>${esc(L.title)}</b>
+      <span class="rs">${L.stems.map((s) => `<i class="sd ${s}"></i>`).join("")}</span><span class="rb">${esc(bits.join(" · "))}</span></div>`;
+  };
+  const mins = Math.floor(d.length_sec / 60), secs = String(Math.round(d.length_sec % 60)).padStart(2, "0");
+  out.innerHTML = `<div class="gm-sum"><div class="h">${d.bars} bars · ${mins}:${secs} · ${(+d.bpm).toFixed(1)} BPM · ${d.bpb} beats a bar</div>
+    <div class="roles-desc">${d.layers.map(line).join("")}</div>
+    ${(d.notes || []).map((n) => `<div class="gm-note">${esc(n)}</div>`).join("")}
+    <div class="row-gap"><button class="primary gm-open">Open &amp; play</button>
+      <span class="dim">Opens as a project: every stem on its own lane, clips you can move and trim, a fader per lane.</span></div></div>`;
+  out.querySelector(".gm-open").onclick = () => openVariant({ project: res.project, desc: res.desc });
 }
 
 async function go() {
@@ -210,9 +356,8 @@ async function go() {
 
 on("event:job", (msg) => {
   if (msg.job.id !== pendingJob) return;
-  // the Auto-Mashup job reports into its own progress line; everything else uses #prog
-  const auto = msg.job.kind === "auto";
-  const prog = m?.body.querySelector(auto ? "#autoProg" : "#prog");
+  const auto = msg.job.kind === "auto";               // (a full-build job from an older page: still opened when it ends)
+  const prog = m?.body.querySelector("#prog");
   if (msg.job.status === "running" && prog) prog.innerHTML = `<span class="spinner"></span> ${esc(msg.job.message || "")} <span class="pct">${Math.round(100 * (msg.job.progress || 0))}%</span>`;
   if (msg.job.status === "error") { if (prog) prog.textContent = msg.job.error; pendingJob = null; }
   if (msg.job.status === "cancelled") { if (prog) prog.textContent = "cancelled"; pendingJob = null; }

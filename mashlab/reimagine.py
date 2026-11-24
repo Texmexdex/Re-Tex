@@ -24,12 +24,12 @@ from pathlib import Path
 
 import numpy as np
 
-from . import analyze, audio_io, automash, djbrain, jobs, library, llm as llm_mod, mixer, project as P, takealign, warp, yue2link
+from . import analyze, audio_io, automash, djbrain, jobs, library, mixer, project as P, takealign, warp, yue2link
 from .config import DATA, SR, STEMS
 from .events import bus
 
 YUE2 = DATA / "yue2"
-STYLE_WORDS = 45
+STYLE_WORDS = 45          # (the style builder keeps it short)
 
 
 # ------------------------------------------------------------------ helpers
@@ -175,42 +175,38 @@ def measured_tags(song_ids):
     return list(dict.fromkeys(tags))
 
 
-def style_prompt(song_ids, user_words="", model=None):
-    """The YuE2 style prompt for a reimagining: the artist presets + measured tags + the user's words, phrased by
-    the DJ model as one line of tags (and built without it if its answer doesn't use them)."""
+VOCAL_TAGS = ("melodic sung vocals", "dense rhythmic vocal delivery")
+
+
+def _no_vocals(text):
+    """A preset with its vocal descriptions left out (an instrumental cover has no singer)."""
+    parts = [p.strip() for p in text.split(",")]
+    return ", ".join(p for p in parts if p and "vocal" not in p.lower() and "singer" not in p.lower())
+
+
+def heard(song_ids, sung=True):
+    """What Re-Tex determined about the songs, for the review step to show as it is: per song its artist preset
+    (name + description), the measured tags, and the audio model's genre / sound (listen.py), when there is one."""
+    out = []
+    for sid in list(song_ids)[:MAX_STYLE_SONGS]:
+        pr = presets_for([sid])
+        h = djbrain._heard(sid) or {}
+        out.append(dict(song=sid, preset=pr[0][0] if pr else "", preset_style=(pr[0][1] if sung else _no_vocals(pr[0][1])) if pr else "",
+                        measured=[t for t in measured_tags([sid]) if sung or t not in VOCAL_TAGS],
+                        genre=" / ".join(x for x in (h.get("genre"), h.get("subgenre")) if x), sound=h.get("sound", "")))
+    return out
+
+
+def style_prompt(song_ids, user_words="", sung=True):
+    """The style the review step starts from: what Re-Tex determined about the songs - their artist presets and the
+    measured tags - then your words, as a plain list (the user, Nov 17: he wants to read what it found, then shape
+    it himself with the review step's style builder). No model writes it, so nothing is replaced behind his back.
+    sung=False (nothing to sing): no vocal tags."""
     song_ids = list(song_ids)[:MAX_STYLE_SONGS]
-    presets = presets_for(song_ids)
-    tags = measured_tags(song_ids)
-    base = ", ".join([p for _, p in presets[:2]] + tags + ([user_words] if user_words else []))
-    heard = []
-    for sid in song_ids:                                 # an audio model's description of each song (listen.py)
-        h = djbrain._heard(sid)
-        if h:
-            heard.append(f"\n- heard in one of the songs: {' / '.join(x for x in (h.get('genre'), h.get('subgenre')) if x)}"
-                         f" - {h['sound']}")
-    model = model or llm_mod.client()
-    try:
-        r = model.chat_json([
-            {"role": "system", "content": "You write style prompts for the YuE2 music generator: one line of comma-"
-             "separated tags - genre, sub-genre, production, drums, bass, synths or instruments, vocal delivery, "
-             f"mood. No song or artist names, no tempo or key. At most {STYLE_WORDS} words."},
-            {"role": "user", "content": "Write the style prompt for a reimagining - a cover - of a mashup of "
-             f"{len(song_ids)} songs. "
-             "It must combine ALL of these into one coherent new production:\n"
-             + "\n".join(f"- artist style: {s}" for _, s in presets) + "\n- measured about the songs: " + ", ".join(tags)
-             + "".join(heard)
-             + (f"\n- the user wants: {user_words}" if user_words else "") + "\n\nWrite the style prompt."}],
-            {"type": "object", "properties": {"style": {"type": "string"}}, "required": ["style"]},
-            max_tokens=300, temperature=0.4)
-        style = " ".join(r["style"].split()).strip().rstrip(".")
-    except llm_mod.LlmError:
-        style = ""
-    finally:
-        model.unload()
-    used = sum(t.split()[0].lower() in style.lower() for t in tags) if tags else 1
-    if not style or used == 0 or (user_words and user_words.split()[0].lower() not in style.lower()):
-        style = base                                       # the model ignored the measured traits / the user
-    return style[:1400]
+    user_words = " ".join((user_words or "").split())
+    presets = [p if sung else _no_vocals(p) for _, p in presets_for(song_ids)]
+    tags = [t for t in measured_tags(song_ids) if sung or t not in VOCAL_TAGS]
+    return ", ".join(presets[:2] + tags + ([user_words] if user_words else []))[:1400]
 
 
 # ------------------------------------------------------------------ stages
@@ -233,8 +229,9 @@ def prepare(proj, prompt="", progress=lambda f, m="": None, cancelled=lambda: Fa
     from . import userlyrics
     typed, untyped = userlyrics.mix_lines(proj)
     lyrics_from = ("mixed" if untyped else "yours") if typed else "whisper"
-    progress(0.35, "the DJ is writing the style")
-    style = style_prompt(songs, prompt)
+    progress(0.35, "reading what the songs are")
+    sung = bool(lines or typed)
+    style = style_prompt(songs, prompt, sung=sung)
     progress(0.45, "YuE2: reading the melody and chords")
     upload_id = yue2link.upload(mix)
     res = yue2link.wait(yue2link.analyze(upload_id, task="full"), progress, 0.45, 0.9, cancelled)
@@ -248,6 +245,7 @@ def prepare(proj, prompt="", progress=lambda f, m="": None, cancelled=lambda: Fa
     mix_seconds = round(audio_io.load(mix, SR).shape[1] / SR, 1)
     prep = dict(prep_id=prep_id, analysis_id=aid, upload_id=upload_id, title=proj.get("name", "mix"), bpm=proj["bpm"],
                 songs=songs, mix_seconds=mix_seconds, nominal_seconds=nominal or mix_seconds, style=style, lyrics=lyrics,
+                heard=heard(songs, sung), sung=sung,
                 sections=[dict(label=s["label"], bars=s["bars"], t0=s["t0"], t1=s["t1"]) for s in sections],
                 lines=lines, fit=dict(sections=fit.get("sections", []), warnings=fit.get("warnings", [])), prompt=prompt,
                 score_rel=rel, lyrics_from=lyrics_from)
@@ -478,7 +476,7 @@ def _ra_analysis(prep, progress, cancelled):
     except yue2link.StudioError as e:
         if "No module named 'studio'" in str(e):
             raise RuntimeError("YuE2 Studio can't run its real-audio reader: it starts it from its root folder, where "
-                               "Python can't find its 'studio' package (<YuE2 folder>/ui/server.py, the analyze job's cwd). "
+                               "Python can't find its 'studio' package (<your YuE2 folder>/ui/server.py, the analyze job's cwd). "
                                "The score modes - melody + harmony, melody cover, instrumental - work.") from e
         raise
     (YUE2 / prep["prep_id"] / "prep.json").write_text(json.dumps(prep, indent=1), encoding="utf-8")

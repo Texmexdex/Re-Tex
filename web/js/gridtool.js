@@ -24,8 +24,11 @@ let view = { t0: 0, span: 12 };     // seconds on screen
 const ac = new (window.AudioContext || window.webkitAudioContext)();
 const songGain = ac.createGain(), clickGain = ac.createGain();
 songGain.connect(ac.destination); clickGain.connect(ac.destination);
-let play = null;                    // { src, ctx0, from (s), rate, nextClick (mark index) }
+let play = null;                    // { src, ctx0, from (s), rate, next (mark index), cycle (loop passes) }
+let loop = null;                    // { a, b } seconds: playback goes round this (Shift+drag the ruler, L = this bar)
 let cursor = 0;
+let fixAt = null;                   // opened to fix the bar count: where the first odd bar was
+let auditData = null;               // latest zero-phase drum-hit audit ({ status, median_offset_ms, sections, ... })
 
 function toast(msg, bad = false) {
   const el = document.createElement("div");
@@ -79,6 +82,37 @@ function evenOut() {
   draw(); updateButtons();
   toast(`${bars.length} bar${bars.length > 1 ? "s" : ""} evened out - listen, then Save (Ctrl+Z undoes)`);
 }
+// bars that aren't bpb beats long: [[first mark, next bar's first mark]] (the first and last bar of the song count)
+function oddBars() {
+  const out = [];
+  let prev = -1;
+  for (let k = 0; k < M.t.length; k++) if (M.d[k]) { if (prev >= 0 && k - prev !== bpb()) out.push([prev, k]); prev = k; }
+  return out;
+}
+// every bar bpb beats, in the phase most of the bars already have (the user, Nov 18: the beats matter most; bars
+// that come out 2 or 1 beats long shift the song's 1s off every other song's bar lines)
+function countEven() {
+  const n = bpb(), votes = new Array(n).fill(0);
+  M.d.forEach((x, k) => { if (x) votes[k % n]++; });
+  const ph = votes.indexOf(Math.max(...votes));
+  const odd = oddBars().length;
+  snap();
+  let changed = 0;
+  for (let k = 0; k < M.t.length; k++) { const d = k % n === ph ? 1 : 0; if (M.d[k] !== d) changed++; M.d[k] = d; }
+  draw(); updateButtons();
+  toast(odd ? `Every bar ${n} beats now (${odd} odd bar${odd > 1 ? "s" : ""} gone, ${changed} bar lines moved) - no beat moved. Listen with the click, then Save`
+    : `Every bar was already ${n} beats`);
+}
+function nextOdd() {
+  const odd = oddBars();
+  if (!odd.length) { toast("No odd bars"); return; }
+  const from = heardPos() + 0.01;
+  const [a] = odd.find(([x]) => M.t[x] > from) || odd[0];
+  cursor = Math.max(0, M.t[a] - 2);
+  view.t0 = Math.max(0, M.t[a] - view.span * 0.3);
+  peaks = null;
+  if (play) start(cursor); else draw();
+}
 function nextUneven() {
   const bars = unevenBars();
   if (!bars.length) { toast("No uneven bars"); return; }
@@ -106,9 +140,47 @@ function moveOne(from, k) {                         // the bar's 1 moves k beats
   draw(); updateButtons();
 }
 
+// "This is a 1": a bar line on mark i, and the bars re-counted from it at the song's beats a bar - from it to the
+// end, or over the whole song (whole). No timing to get exact: you pick which beat is the 1, the marks stay put.
+function oneHere(i, whole = false) {
+  if (i < 0 || i >= M.t.length) return;
+  snap();
+  const n = bpb(), from = whole ? 0 : i;
+  for (let k = from; k < M.t.length; k++) M.d[k] = (((k - i) % n) + n) % n === 0 ? 1 : 0;
+  sel = i;
+  draw(); updateButtons();
+  toast(`Bar 1 on this beat, bars of ${n} re-counted ${whole ? "over the whole song" : "from here on"} - listen, then Save (Ctrl+Z undoes)`);
+}
+// the mark nearest to what you hear now (the delay taken off): tap 1 while it plays, on the beat you hear as the 1
+function nearestMark(t) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < M.t.length; i++) { const d = Math.abs(M.t[i] - t); if (d < bd) { bd = d; best = i; } }
+  return best;
+}
+function barAround(t) {                             // [start, end] of the bar the time t is in
+  const { D } = kinds();
+  let a = 0, b = buf ? buf.duration : t + 2;
+  for (const i of D) { if (M.t[i] <= t + 1e-6) a = M.t[i]; else { b = M.t[i]; break; } }
+  return [a, b];
+}
+function setLoop(l) {
+  loop = l && l.b - l.a > 0.05 ? l : null;
+  $("gLoopMsg").textContent = loop ? `looping ${fmtT(loop.a)} - ${fmtT(loop.b)}` : "";
+  $("gLoopOff").disabled = !loop;
+  if (play) start(loop ? loop.a : heardPos()); else { if (loop) cursor = loop.a; draw(); }
+}
+
 // ---------------------------------------------------------------- audio
-function playPos() { return play ? play.from + (ac.currentTime - play.ctx0) * play.rate : cursor; }
-function heardPos() { return play ? Math.max(0, playPos() - (+$("gDelay").value / 1000) * play.rate) : cursor; }
+function wrap(p) {                                  // inside a loop: back round to its start
+  if (play?.loop && p >= play.loop.b) return play.loop.a + ((p - play.loop.a) % (play.loop.b - play.loop.a));
+  return p;
+}
+function playPos() { return play ? wrap(play.from + (ac.currentTime - play.ctx0) * play.rate) : cursor; }
+function heardPos() {
+  if (!play) return cursor;
+  const raw = play.from + (ac.currentTime - play.ctx0 - +$("gDelay").value / 1000) * play.rate;
+  return Math.max(0, raw < play.from ? raw : wrap(raw));
+}
 // a hard, bright click (a noise snap + a short high tone) - a plain sine gets buried under distorted guitars
 let snapBuf = null;
 function clickAt(when, kind) {
@@ -136,8 +208,16 @@ function movePhrase(k) {                            // the 4-bar phrases start k
 function schedule() {
   if (!play) return;
   const ahead = ac.currentTime + 0.2;
-  while (play.next < M.t.length) {
-    const when = play.ctx0 + (M.t[play.next] - play.from) / play.rate;
+  for (let guard = 0; guard < 500; guard++) {
+    const L = play.loop;
+    if (L && (play.next >= M.t.length || M.t[play.next] >= L.b)) {         // round the loop: its first mark again
+      play.cycle++;
+      play.next = M.t.findIndex((t) => t >= L.a - 0.001);
+      if (play.next < 0 || M.t[play.next] >= L.b) { play.next = M.t.length; break; }
+    }
+    if (play.next >= M.t.length) break;
+    const pos = M.t[play.next] - play.from + (L ? play.cycle * (L.b - L.a) : 0);
+    const when = play.ctx0 + pos / play.rate;
     if (when > ahead) break;
     if (when >= ac.currentTime - 0.005 && $("gClick").checked) clickAt(Math.max(when, ac.currentTime), markKind(play.next));
     play.next++;
@@ -151,9 +231,12 @@ function start(from) {
   const src = ac.createBufferSource();
   src.buffer = buf; src.playbackRate.value = rate;
   src.connect(songGain);
+  if (loop && !(from >= loop.a - 1e-6 && from < loop.b)) from = loop.a;   // (a loop is set: play goes round it)
+  const LL = loop ? { ...loop } : null;
+  if (LL) { src.loop = true; src.loopStart = LL.a; src.loopEnd = LL.b; }
   const ctx0 = ac.currentTime + 0.05;
   src.start(ctx0, Math.max(0, from));
-  play = { src, ctx0, from, rate, next: M.t.findIndex((t) => t >= from - 0.001) };
+  play = { src, ctx0, from, rate, loop: LL, cycle: 0, next: M.t.findIndex((t) => t >= from - 0.001) };
   if (play.next < 0) play.next = M.t.length;
   play.timer = setInterval(schedule, 25);
   schedule();
@@ -174,7 +257,7 @@ function tick() {
   const p = heardPos();
   if ($("gFollow").checked && (p < view.t0 || p > view.t0 + view.span * 0.8)) view.t0 = Math.max(0, p - view.span * 0.2);
   draw();
-  if (p >= buf.duration) { stop(); return; }
+  if (!play.loop && p >= buf.duration) { stop(); return; }
   requestAnimationFrame(tick);
 }
 
@@ -217,7 +300,33 @@ function draw() {
   const bad = unevenBars();                          // bars whose beats aren't even: a red band in the ruler
   g.fillStyle = "rgba(240,90,80,0.28)";
   for (const [a, b] of bad) { const x0 = tx(M.t[a]), x1 = tx(M.t[b]); if (x1 > 0 && x0 < w) g.fillRect(x0, RULER - 5, x1 - x0, 5); }
+  if (auditData?.sections?.length) {                 // sections where real drum hits disagree with marks (>22 ms): top bar
+    for (const sc of auditData.sections) {
+      if (!sc.active || Math.abs(sc.offset_ms || 0) <= 22) continue;
+      const x0 = tx(sc.t0), x1 = tx(sc.t1);
+      if (x1 <= 0 || x0 >= w) continue;
+      g.fillStyle = Math.abs(sc.offset_ms) > 35 ? "rgba(255,78,96,0.45)" : "rgba(242,163,58,0.40)";
+      g.fillRect(Math.max(0, x0), 0, Math.min(w, x1) - Math.max(0, x0), 4);
+    }
+  }
+  const odd = oddBars();
+  $("gOdd").textContent = odd.length ? `${odd.length} bar${odd.length > 1 ? "s" : ""} not ${bpb()} beats: ` +
+    odd.slice(0, 6).map(([a, b]) => `${fmtT(M.t[a])} (${b - a})`).join(", ") + (odd.length > 6 ? " …" : "") : `every bar is ${bpb()} beats`;
   $("gUneven").textContent = bad.length ? `${bad.length} bar${bad.length > 1 ? "s" : ""} with uneven beats (red in the ruler)` : "every bar's beats are even";
+  for (const sp of M.spans || []) {                  // gridded by rule, not heard (TempoMap's regular.py): amber + what
+    const x0 = tx(sp.start), x1 = tx(sp.end);
+    if (x1 < 0 || x0 > w) continue;
+    g.fillStyle = "rgba(242,163,58,0.10)"; g.fillRect(x0, RULER, x1 - x0, h - RULER);
+    g.fillStyle = "rgba(242,163,58,0.85)"; g.font = "600 10px Segoe UI, system-ui, sans-serif";
+    g.fillText(sp.kind === "no beat" ? "no beat - grid carried on" : sp.kind === "unknown" ? "unknown - check (gridded as the rest)" : "assumed - gridded as the rest",
+      Math.max(x0, 0) + 4, h - 8);
+  }
+  if (loop) {                                        // the loop: a band over the ruler and a tint over the song
+    const x0 = tx(loop.a), x1 = tx(loop.b);
+    g.fillStyle = "rgba(30,215,96,0.10)"; g.fillRect(x0, RULER, x1 - x0, h - RULER);
+    g.fillStyle = "rgba(30,215,96,0.55)"; g.fillRect(x0, 0, x1 - x0, 4);
+  }
+  if (rulerSel) { g.fillStyle = "rgba(30,215,96,0.35)"; g.fillRect(tx(Math.min(rulerSel.a, rulerSel.b)), 0, Math.abs(tx(rulerSel.b) - tx(rulerSel.a)), RULER); }
   const { kind: K, bar: barOf } = kinds();
   g.font = "600 11px Segoe UI, system-ui, sans-serif";
   for (let i = 0; i < M.t.length; i++) {
@@ -241,7 +350,7 @@ function draw() {
 }
 
 // ---------------------------------------------------------------- mouse
-let drag = null;
+let drag = null, rulerSel = null;
 function markAt(x) {                                 // a bar line within 7 px wins over a beat within 5 px
   let best = -1, bd = 7;
   for (let i = 0; i < M.t.length; i++) if (M.d[i]) { const d = Math.abs(tx(M.t[i]) - x); if (d < bd) { bd = d; best = i; } }
@@ -255,12 +364,18 @@ cv.addEventListener("mousemove", (e) => {
   if (drag) return;
   const k = markAt(e.offsetX);
   cv.style.cursor = k >= 0 ? "ew-resize" : "text";
-  cv.title = k < 0 ? "Click: move the playhead · double-click: add a beat (Ctrl: exactly here)"
+  cv.title = e.offsetY < RULER ? "Drag along the ruler: loop that stretch (it snaps to the beats) · click the ruler: loop off"
+    : k < 0 ? "Click: move the playhead · double-click: add a beat (Ctrl: exactly here)"
     : M.d[k] ? "Bar line - drag: the bar before squeezes, the rest moves along · Ctrl+drag: only the bars either side · Shift+drag: everything · Del: delete · double-click: make it a beat"
     : "Beat - drag: its bar's tempo (kept even), the rest moves along · Ctrl+drag: only this beat · Shift+drag: everything · Del: delete · double-click: make it a bar's 1";
 });
 cv.addEventListener("mousedown", (e) => {
   if (e.button !== 0 || !M) return;
+  if (e.offsetY < RULER && !e.ctrlKey && !e.metaKey) {           // drag along the ruler: a loop (snapped to beats)
+    const t = Math.max(0, xt(e.offsetX));
+    rulerSel = { a: t, b: t };
+    return;
+  }
   const k = markAt(e.offsetX);
   if (k >= 0) {                                      // select it; a drag starts once the mouse moves
     sel = k;
@@ -273,6 +388,7 @@ cv.addEventListener("mousedown", (e) => {
   if (play) start(cursor); else draw();
 });
 addEventListener("mousemove", (e) => {
+  if (rulerSel) { const r = cv.getBoundingClientRect(); rulerSel.b = Math.max(0, xt(e.clientX - r.left)); draw(); return; }
   if (!drag) return;
   const r = cv.getBoundingClientRect(), x = e.clientX - r.left;
   if (!drag.moved) {
@@ -283,6 +399,14 @@ addEventListener("mousemove", (e) => {
   draw();
 });
 addEventListener("mouseup", () => {
+  if (rulerSel) {
+    const a = Math.min(rulerSel.a, rulerSel.b), b = Math.max(rulerSel.a, rulerSel.b);
+    rulerSel = null;
+    if (Math.abs(tx(b) - tx(a)) < 4) { setLoop(null); cursor = a; if (play) start(cursor); else draw(); return; }
+    const ia = nearestMark(a), ib = nearestMark(b);          // whole beats: the loop starts and ends on marks
+    setLoop(ia >= 0 && ib > ia ? { a: M.t[ia], b: M.t[ib] } : { a, b });
+    return;
+  }
   if (!drag) return;
   const moved = drag.moved;
   drag = null; draw(); updateButtons();
@@ -325,9 +449,59 @@ $("gFit").onclick = () => { view = { t0: 0, span: (buf?.duration || 60) * 1.02 }
 $("gUndo").onclick = () => { if (undo.length) { redo.push(JSON.stringify({ M })); restore(undo.pop()); } };
 $("gRedo").onclick = () => { if (redo.length) { undo.push(JSON.stringify({ M })); restore(redo.pop()); } };
 $("gEven").onclick = (e) => { evenOut(); e.currentTarget.blur(); };
+$("gOne").onclick = (e) => { oneHere(sel >= 0 ? sel : nearestMark(heardPos())); e.currentTarget.blur(); };
+$("gOneAll").onclick = (e) => { oneHere(sel >= 0 ? sel : nearestMark(heardPos()), true); e.currentTarget.blur(); };
+$("gLoopBar").onclick = (e) => { const [a, b] = barAround(heardPos()); setLoop({ a, b }); e.currentTarget.blur(); };
+$("gLoop2").onclick = (e) => { const [a] = barAround(heardPos()); const [, b] = barAround(barAround(a)[1] + 1e-3); setLoop({ a, b }); e.currentTarget.blur(); };
+$("gLoopOff").onclick = (e) => { setLoop(null); e.currentTarget.blur(); };
 $("gNextUneven").onclick = (e) => { nextUneven(); e.currentTarget.blur(); };
+$("gCount").onclick = (e) => { countEven(); e.currentTarget.blur(); };
+$("gNextOdd").onclick = (e) => { nextOdd(); e.currentTarget.blur(); };
 $("gSave").onclick = save;
 $("gSaveProj").onclick = saveForProject;
+function showAudit(aud, prefix = "") {
+  auditData = aud;
+  const el = $("gAuditMsg");
+  if (!el) return;
+  if (!aud || !aud.active_windows) {
+    el.textContent = prefix || "no clear drum hits to audit";
+    el.style.color = "";
+    draw();
+    return;
+  }
+  const sign = aud.signed_median_ms >= 0 ? "+" : "";
+  const drift = aud.needs_quantize ? ` · drifts ${aud.drift_pct.toFixed(1)}% (${Math.round(aud.max_straight_err_ms)} ms)` : " · steady";
+  el.textContent = `${prefix ? prefix + " · " : ""}drum hits: ${aud.median_offset_ms.toFixed(1)} ms median (${sign}${Math.round(aud.signed_median_ms)} ms, max ${aud.max_offset_ms.toFixed(0)} ms; ${aud.bad_windows}/${aud.active_windows} off)${drift}`;
+  el.style.color = aud.status === "ok" ? "#2ee06e" : aud.status === "warn" ? "#f2a33a" : "#ff4e60";
+  draw();
+}
+async function runAudit() {
+  if (!M?.t?.length) return;
+  const el = $("gAuditMsg");
+  if (el) { el.textContent = "checking against drum hits…"; el.style.color = ""; }
+  try {
+    const aud = await api.post(`/api/songs/${sid}/grid/audit`, { t: M.t });
+    showAudit(aud);
+  } catch (e) {
+    if (el) el.textContent = "";
+  }
+}
+$("gAudit").onclick = (e) => { runAudit(); e.currentTarget.blur(); };
+$("gVerify").onclick = async () => {
+  const btn = $("gVerify"), msg = $("gAuditMsg");
+  btn.disabled = true; msg.textContent = "aligning grid to zero-phase kick + snare hits…"; msg.style.color = "";
+  try {
+    const r = await api.post(`/api/songs/${sid}/grid/verify`);
+    snap();
+    M = { t: r.marks.t, d: r.marks.d, s: r.marks.s, c: r.marks.t.map(() => 0), bpb: r.marks.bpb, p0: null, spans: [] };
+    sel = -1;
+    if (play) start(heardPos());
+    draw(); updateButtons();
+    const rp = r.report;
+    showAudit(rp.post_audit, `${rp.after} beats (${rp.bpm.toFixed(2)} BPM · ${rp.mode}) · listen, then Save`);
+  } catch (e) { msg.textContent = ""; toast(e.message, true); }
+  btn.disabled = false;
+};
 $("gRepair").onclick = async () => {
   const btn = $("gRepair"), msg = $("gRepairMsg");
   btn.disabled = true; msg.textContent = "re-counting the detector's beats…";
@@ -339,12 +513,41 @@ $("gRepair").onclick = async () => {
     if (play) start(heardPos());
     draw(); updateButtons();
     const rp = r.report, fix = rp.sections.filter((x) => x.ratio && x.ratio !== 1);
-    msg.textContent = `${rp.after} beats on one ${Math.round(rp.pulse)} BPM pulse` +
-      (fix.length ? ` · re-counted ${fix.length} stretch${fix.length > 1 ? "es" : ""} the detector heard in half / double time` : "") +
-      (rp.unsure.length ? ` · ${rp.unsure.length} unsure (amber) - check by ear` : "") + " · listen, then Save";
+    const lost = rp.sections.filter((x) => x.kind === "even").length;      // (lock.repaired "neighbours")
+    msg.textContent = (rp.method === "neighbours" ? `${rp.after} beats, each stretch put on the pulse of the one beside it`
+      : `${rp.after} beats on one ${Math.round(rp.pulse)} BPM pulse`) +
+      (fix.length ? ` · re-counted ${fix.length} stretch${fix.length > 1 ? "es" : ""} the detector heard in half / double time${rp.method === "neighbours" ? " or 3 against 2" : ""}` : "") +
+      (lost ? ` · ${lost} stretch${lost > 1 ? "es" : ""} where it lost the beat got even beats (amber) - check by ear` : rp.unsure.length ? ` · ${rp.unsure.length} unsure (amber) - check by ear` : "") +
+      (rp.sec20 >= 2 ? ` · a lock would still play about ${Math.round(rp.sec20)} s off speed` : "") + " · listen, then Save";
+    runAudit();
   } catch (e) { msg.textContent = ""; toast(e.message, true); }
   btn.disabled = false;
 };
+// TempoMap (the sidecar, tempomap_side.py): its marks as a proposal, like Repair - nothing is saved until Save
+$("gTempo").onclick = async () => {
+  const btn = $("gTempo"), msg = $("gTempoMsg");
+  btn.disabled = true; msg.textContent = "mapping the song (20-60 s the first time)…";
+  try {
+    const r = await api.post(`/api/songs/${sid}/tempomap`);
+    snap();
+    M = { t: r.marks.t, d: r.marks.d, s: r.marks.s, c: r.marks.t.map(() => 0), bpb: r.marks.bpb, p0: null, spans: r.marks.spans || [] };
+    sel = -1;
+    if (play) start(heardPos());
+    draw(); updateButtons();
+    const rp = r.report, secs = rp.sections.filter((x) => x.how !== "none");
+    const unsure = r.marks.s.filter((x) => !x).length;
+    msg.textContent = `${r.marks.t.length} beats · ${secs.length} tempo section${secs.length === 1 ? "" : "s"}: ` +
+      secs.map((x) => `${x.bpm.toFixed(2)}${x.how === "follows" ? " (follows the drift)" : ""}`).join(" > ") + " BPM" +
+      (rp.meters.length ? ` · bars: ${rp.meters.slice(0, 6).join(", ")}${rp.meters.length > 6 ? " …" : ""}` : "") +
+      (unsure ? ` · ${unsure} unsure (amber) - check by ear` : "") +
+      ((r.marks.spans || []).length ? ` · gridded by rule: ${r.marks.spans.map((x) => `${fmtT(x.start)}-${fmtT(x.end)} ${x.kind}`).join(", ")}` : "") +
+      (rp.downbeat_model ? "" : ` · FALLBACK: bars from the onsets alone, without Beat This!'s downbeats (${rp.downbeat_error || "it didn't run"})`) + " · listen, then Save";
+    runAudit();
+  } catch (e) { msg.textContent = ""; toast(e.message, true); }
+  btn.disabled = false;
+};
+$("gTempoOpen").onclick = () => window.open(`/tempomap?sid=${encodeURIComponent(sid)}${pid ? `&pid=${encodeURIComponent(pid)}` : ""}`,
+  "retexTempoMap", "width=1300,height=900");
 $("gDone").onclick = async () => {
   if (dirty) {
     const keep = confirm("Save the grid before closing?\n\nOK = save and close, Cancel = close without saving");
@@ -358,7 +561,7 @@ $("gDone").onclick = async () => {
 // Save = the song's grid: projects from now on use it, saved projects keep the grid they had (the server copies it
 // into them), and the project this window was opened from follows the new grid. "For this project only" = that
 // project's own timing for the song (the main window applies it to the open project - it's in its undo).
-const marksNow = () => ({ t: M.t, d: M.d, s: M.s, c: M.c, bpb: bpb(), p0: M.p0 ?? null });
+const marksNow = () => ({ t: M.t, d: M.d, s: M.s, c: M.c, bpb: bpb(), p0: M.p0 ?? null, spans: M.spans || [] });
 async function save() {
   try {
     const r = await api.put(`/api/songs/${sid}/marks`, { user_marks: marksNow(), ...(pid ? { project: pid } : {}) });
@@ -395,6 +598,8 @@ addEventListener("keydown", (e) => {
   else if (ctrl && k === "s") { e.preventDefault(); save(); }
   else if (ctrl && k === "z") { e.preventDefault(); $("gUndo").click(); }
   else if (ctrl && k === "y") { e.preventDefault(); $("gRedo").click(); }
+  else if (k === "1" && !ctrl) { e.preventDefault(); oneHere(sel >= 0 && !play ? sel : nearestMark(heardPos()), e.shiftKey); }
+  else if (k === "l" && !ctrl) { e.preventDefault(); if (loop) setLoop(null); else $("gLoopBar").click(); }
   else if (k === "arrowleft" || k === "arrowright") { e.preventDefault(); nudge(e.shiftKey ? heardPos() : -1, (k === "arrowleft" ? -1 : 1) * (e.altKey ? 0.002 : 0.01)); }
 });
 addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
@@ -428,7 +633,8 @@ addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.ret
   }
   const m = own || info.user_marks || detectedMarks(info);
   M = { t: [...m.t], d: m.d.map((x) => (x ? 1 : 0)), s: [...(m.s || m.t.map(() => 1))],
-    c: m.c && m.c.length === m.t.length ? m.c.map((x) => (x ? 1 : 0)) : m.t.map(() => 0), bpb: m.bpb || info.bpb || 4, p0: m.p0 ?? null };
+    c: m.c && m.c.length === m.t.length ? m.c.map((x) => (x ? 1 : 0)) : m.t.map(() => 0), bpb: m.bpb || info.bpb || 4, p0: m.p0 ?? null,
+    spans: m.spans || [] };
   $("gMeta").textContent = ` · ${M.t.length} marks ${own ? `(${pname ? `"${pname}"` : "this project"}'s own timing)` : info.user_marks ? "(the song's grid - yours)" : "(the song's grid - the detector's)"} · ${M.bpb} beats a bar`;
   // the delay: what the browser knows of your output, else what you set last time
   const est = Math.round(((ac.outputLatency || 0) + (ac.baseLatency || 0)) * 1000);
@@ -437,6 +643,11 @@ addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.ret
   $("gSongVol").value = String(ls("songVol", 0.8)); songGain.gain.value = +$("gSongVol").value;
   savedKey = marksKey(); updateButtons();
   size();
+  if (new URLSearchParams(location.search).get("fix") === "bars") {          // from the arrangement's clip menu (no audio needed)
+    const first = oddBars()[0];
+    countEven();
+    if (first) { cursor = Math.max(0, M.t[first[0]] - 2); view.t0 = Math.max(0, M.t[first[0]] - view.span * 0.3); fixAt = cursor; peaks = null; draw(); }
+  }
   $("gHint").insertAdjacentText("afterbegin", "Loading the song… ");
   try {
     const raw = await (await fetch(`/api/songs/${sid}/source`)).arrayBuffer();
@@ -447,7 +658,10 @@ addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.ret
   for (let i = 0; i < L.length; i++) mono[i] = 0.5 * (L[i] + R[i]);
   $("gHint").firstChild.remove();
   const firstSure = M.t[Math.max(0, M.s.indexOf(1))] || 0;
-  view = { t0: Math.max(0, firstSure - 2), span: 12 };
-  cursor = Math.max(0, firstSure - 2);
+  view = { t0: Math.max(0, (fixAt ?? firstSure) - 2), span: 12 };
+  cursor = Math.max(0, fixAt ?? firstSure - 2);
   peaks = null; draw();
+  // opened from the tempo map's page: start from its proposal
+  if (new URLSearchParams(location.search).get("proposal") === "tempomap") $("gTempo").click();
+  else runAudit();
 })();

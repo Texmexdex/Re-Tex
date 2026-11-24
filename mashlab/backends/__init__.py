@@ -9,14 +9,16 @@ relying on long-lived singletons.
 chosen, the device, free VRAM, and a human reason. It is surfaced at GET /api/capabilities (FEAT later). The
 local path must pass detect() and run standalone with ZERO cloud config.
 """
-from .asr import AsrBackend, FasterWhisperLarge, WhisperXBackend, CloudAsrBackend, local_asr
+from .asr import (AsrBackend, FasterWhisperLarge, FasterWhisperNoVad, ParakeetTdtAsr,
+                  WhisperXBackend, CloudAsrBackend, local_asr)
 from .concept import (ConceptBackend, MiniLmZeroShot, MiniLmLlamaCpp, CloudConcept, local_concept)
 from .separation import SeparationBackend, LocalSeparation, local_separation
 from .generative import GenerativeBackend, NullGenerative, YuE2Glue, local_generative
 from .cloud import CloudLlmBackend, CloudAsrBackend as CloudAsrAdapter
 
 __all__ = [
-    "AsrBackend", "FasterWhisperLarge", "WhisperXBackend", "CloudAsrBackend", "local_asr",
+    "AsrBackend", "FasterWhisperLarge", "FasterWhisperNoVad", "ParakeetTdtAsr",
+    "WhisperXBackend", "CloudAsrBackend", "local_asr",
     "ConceptBackend", "MiniLmZeroShot", "MiniLmLlamaCpp", "CloudConcept", "local_concept",
     "SeparationBackend", "LocalSeparation", "local_separation",
     "GenerativeBackend", "NullGenerative", "YuE2Glue", "local_generative",

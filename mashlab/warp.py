@@ -123,16 +123,60 @@ def timed(beats, tspec):
     return bt[keep], W[keep]
 
 
-def _stretch_array(src, n_in, dst):
+def _stretch_array(src, n_in, dst, pre_ratio=None):
     """Per-input-sample stretch factor (>1 = faster) so beat j..j+1 fills exactly one target beat."""
     f = np.empty(n_in)
     idx = np.clip(np.round(src).astype(np.int64), 0, n_in)
-    ratios = np.diff(src) / np.diff(dst)
-    f[: idx[0]] = ratios[0]
+    ratios = np.clip(np.diff(src) / np.maximum(1.0, np.diff(dst)), 0.25, 4.0)
+    f[: idx[0]] = ratios[0] if pre_ratio is None else float(np.clip(pre_ratio, 0.25, 4.0))
     for j in range(len(ratios)):
         f[idx[j]: idx[j + 1]] = ratios[j]
     f[idx[-1]:] = ratios[-1]
     return f
+
+
+def _smooth_pilot_map(meas, good, dst, max_slope=0.008):
+    """Smooth R3/R2 pilot drift and clamp slope <= +-max_slope (default +-0.8% = +-13.8 cents, inaudible).
+
+    Removes beat-to-beat click-detection jitter that otherwise injects audible varispeed pitch wobble
+    while preserving cumulative Rubber Band time drift to sub-millisecond accuracy.
+    Returns smoothed measured positions aligned to `dst`, or None if too few valid clicks exist.
+    """
+    from scipy.ndimage import median_filter
+    err = meas[good] - dst[good]
+    if len(err) < 2:
+        return None
+    sz = min(7, len(err) | 1)
+    trend = median_filter(err, size=sz, mode="nearest")
+    keep = np.abs(err - trend) < 0.025 * SR
+    min_need = 4 if len(dst) >= 4 else 2
+    if keep.sum() < min_need:
+        keep = np.abs(err - trend) < 0.06 * SR
+    if keep.sum() < min_need:
+        return None
+    d_keep = dst[good][keep]
+    e_keep = err[keep]
+    err_all = np.interp(dst, d_keep, e_keep)
+    # 9-beat Hann smooth removes single-beat pilot click jitter while preserving cumulative R3 drift
+    if len(err_all) >= 9:
+        ker = np.hanning(11)[1:-1]
+        ker /= ker.sum()
+        err_all = np.convolve(np.pad(err_all, 4, mode="reflect"), ker, mode="valid")[:len(err_all)]
+    elif len(err_all) >= 5:
+        ker = np.hanning(7)[1:-1]
+        ker /= ker.sum()
+        err_all = np.convolve(np.pad(err_all, 2, mode="reflect"), ker, mode="valid")[:len(err_all)]
+    # Symmetric bidirectional slope clamp (guarantees varispeed micro-trim never bends audible pitch)
+    fwd = err_all.copy()
+    for j in range(1, len(fwd)):
+        lim = max_slope * max(1.0, dst[j] - dst[j - 1])
+        fwd[j] = np.clip(fwd[j], fwd[j - 1] - lim, fwd[j - 1] + lim)
+    bwd = err_all.copy()
+    for j in range(len(bwd) - 2, -1, -1):
+        lim = max_slope * max(1.0, dst[j + 1] - dst[j])
+        bwd[j] = np.clip(bwd[j], bwd[j + 1] - lim, bwd[j + 1] + lim)
+    err_clean = 0.5 * (fwd + bwd)
+    return dst + err_clean
 
 
 def _pilot_positions(f, n_in, src, semis, stem_opts, n_expect):
@@ -228,16 +272,49 @@ def render(y, beats, bpm, mult=1.0, semis=0.0, stem="other", quality="hq", tspec
     good = ok & np.isfinite(meas)
     if good.sum() < 4:
         return _fit_len(out, n_out), t0, "r3-uncorrected"
-    # reject outliers (missed detections) against the LOCAL trend of the error. (A global median threw
-    # away every correct measurement once R3's drift had grown past 30 ms - the rest of the song then
-    # went uncorrected, e.g. a drum render 45 ms early for its last minute.)
-    from scipy.ndimage import median_filter
-    err = meas[good] - dst[good]
-    trend = median_filter(err, size=9, mode="nearest")
-    keep = np.abs(err - trend) < 0.03 * SR
-    d_pts, m_pts = dst[good][keep], meas[good][keep]
-    fixed = resample_map(out, m_pts, d_pts, n_out)
+    # reject outliers against local trend, Hann-smooth single-beat pilot jitter, and clamp slope <= +-0.8%
+    # so varispeed micro-trim removes cumulative R3 drift without injecting audible pitch wobble
+    meas_clean = _smooth_pilot_map(meas, good, dst, max_slope=0.008)
+    if meas_clean is None:
+        return _fit_len(out, n_out), t0, "r3-uncorrected"
+    fixed = resample_map(out, meas_clean, dst, n_out)
     return fixed, t0, "r3"
+
+
+def render_to_grid(y, src_beats_s, dst_beats_s, semis=0.0, stem="other"):
+    """Warp stereo (2, n) audio so src_beats_s[j] lands sample-accurately at dst_beats_s[j] (seconds).
+
+    Preserves unwarped 1.0x pre-roll when dst_beats_s[0] == src_beats_s[0], uses R3 + smoothed/slope-clamped
+    click-pilot correction (+-0.8% max slope -> zero audible pitch wobble). Returns (out, method).
+    """
+    import pedalboard
+    n_in = y.shape[1]
+    src = np.asarray(src_beats_s, np.float64) * SR
+    dst = np.asarray(dst_beats_s, np.float64) * SR
+    slope_end = (dst[-1] - dst[-2]) / max(1.0, src[-1] - src[-2])
+    n_out = max(1, int(np.ceil((n_in - src[-1]) * slope_end + dst[-1])) + 1)
+
+    ratios = np.diff(src) / np.maximum(1.0, np.diff(dst))
+    pre_ratio = (src[0] / max(1.0, dst[0])) if (src[0] > 0.05 * SR and dst[0] > 0.05 * SR) else None
+    if np.max(np.abs(ratios - 1.0)) < VARISPEED_MAX and abs(semis) < 0.005 and (pre_ratio is None or abs(pre_ratio - 1.0) < VARISPEED_MAX):
+        return resample_map(y, src, dst, n_out), "varispeed"
+
+    f = _stretch_array(src, n_in, dst, pre_ratio=pre_ratio)
+    opts = dict(transient_mode="crisp" if stem == "drums" else "mixed",
+                preserve_formants=(stem == "vocals"))
+    out = pedalboard.time_stretch(y, SR, stretch_factor=f, pitch_shift_in_semitones=float(semis),
+                                  high_quality=True, **opts)
+    _, env, ok = _pilot_positions(f, n_in, src, float(semis), opts, n_out)
+    ref = 1.5
+    meas = _measure(env, dst + ref, ok) - ref
+    good = ok & np.isfinite(meas)
+    if good.sum() < 4:
+        return _fit_len(out, n_out), "r3-uncorrected"
+    meas_clean = _smooth_pilot_map(meas, good, dst, max_slope=0.008)
+    if meas_clean is None:
+        return _fit_len(out, n_out), "r3-uncorrected"
+    fixed = resample_map(out, meas_clean, dst, n_out)
+    return fixed, "r3"
 
 
 def _fit_len(y, n):
@@ -292,8 +369,15 @@ def _worker(sid, stem, bpm, mult, semis, quality, tspec=""):
     from . import audio_io
     from . import variant
     info = json.loads((song_path(sid) / "song.json").read_text(encoding="utf-8"))
-    y = audio_io.load(variant.stem_file(sid, stem, tspec), SR) / variant.scale_for(info, tspec)
-    out, t0, method = render(y, variant.beats_for(info, tspec), bpm, mult, semis, stem, quality, tspec)
+    res = None
+    if info.get("kind") == "midi":          # a MIDI part: played straight onto this tempo / timing (midi.warp_render)
+        from . import midi
+        res = midi.warp_render(sid, info, stem, bpm, mult, semis, quality, tspec)
+    if res is not None:
+        out, t0, method = res
+    else:
+        y = audio_io.load(variant.stem_file(sid, stem, tspec), SR) / variant.scale_for(info, tspec)
+        out, t0, method = render(y, variant.beats_for(info, tspec), bpm, mult, semis, stem, quality, tspec)
     key = cache_key(stem, bpm, mult, semis, quality, tspec)
     p = cache_path(sid, key)
     audio_io.save_npy_atomic(p, out.astype(np.float32))

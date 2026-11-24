@@ -73,6 +73,9 @@ class _MiniLmEmbedMixin:
 
     def _embedder(self):
         if self._embed is None:
+            if self.embed_model == EMBED_MODEL:
+                from .. import components
+                components.require("minilm")    # downloads only when you press Download
             from sentence_transformers import SentenceTransformer
             self._embed = SentenceTransformer(self.embed_model)
         return self._embed

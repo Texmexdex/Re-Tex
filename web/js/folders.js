@@ -28,8 +28,8 @@ export function groups(songs) {
   return out;
 }
 
-export async function createFolder(name, songIds = []) {
-  name = (name ?? prompt("Folder name", "New folder"))?.trim();
+export async function createFolder(name, songIds = [], suggest = "New folder") {
+  name = (name ?? prompt("Folder name", suggest))?.trim();
   if (!name) return null;
   const f = { id: uid("f"), name, collapsed: false };
   S.folders.folders.push(f);

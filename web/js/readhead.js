@@ -1,7 +1,7 @@
 // ReadHead: automatic beat-aligned chops for a lane (POST /api/readhead/run, mashlab/readhead.py).
 //   Arrange vocal  re-arranges the vocal song on this lane against the rest of the project (Flow: reads forward
 //                  with loops / alternations / stammers / ratchets / hook loops, the singer's bar phase kept, cuts
-//                  only between syllables - learned from a hand-made edit; Lines: whole lines per
+//                  only between syllables - learned from your "all you need to know" edit; Lines: whole lines per
 //                  section). Your section markers, if you've set any, steer it.
 //   Glitch chops   chops the lane's own audio in place: stutters, rolls, repeats, skips, gates, displacements.
 // The result is ordinary clips on THIS lane only, applied as one undo step (Ctrl+Z puts the lane back).

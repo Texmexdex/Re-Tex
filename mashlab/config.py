@@ -45,8 +45,11 @@ SAMPLES = DATA / "samples"      # data/samples/smp_<id>/: clips baked in the sam
 
 
 def song_path(sid):
-    """A song's folder - or a baked sample's (ids "smp_..."). Everything that opens a song's files goes through here."""
+    """A song's folder - or a baked sample's (ids "smp_...") or a MIDI song's ("midi_...", midi.py). Everything that
+    opens a song's files goes through here."""
     sid = str(sid)
+    if sid.startswith("midi_"):
+        return MIDI_DIR / sid
     return (SAMPLES if sid.startswith("smp_") else SONGS) / sid
 CACHE = DATA / "cache"          # warped stem renders, keyed by song/stem/tempo/pitch
 PROJECTS = DATA / "projects"
@@ -57,6 +60,7 @@ WEB = ROOT / "web"
 
 CONFIG_JSON = DATA / "config.json"   # Phase-2 app config: backend tier selection + lyrics_calib (appcfg.py)
 
+MIDI_DIR = DATA / "midi"       # data/midi/midi_<id>/: MIDI songs (midi.py) - song-shaped, parts as stems
 UPLOADS = DATA / "uploads"      # data/uploads/ : original dropped audio files
 
 SR = 44100                      # internal sample rate (Demucs native)

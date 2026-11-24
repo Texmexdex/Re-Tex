@@ -13,3 +13,6 @@ fastapi
 uvicorn
 python-multipart
 sounddevice
+mido
+onnxruntime
+onnx-asr

@@ -168,7 +168,7 @@ def _worker(sid, stem, bpm, mult, semis, A, B, rate, tp, out_path, tspec=""):
             y = full[:, s0:s1]
         y = np.ascontiguousarray(y, np.float32) / variant.scale_for(info, tspec)   # undo save headroom
         # per-input-sample stretch factor, as warp._stretch_array but for this stretch only
-        ratios = np.diff(src) / np.diff(dst)
+        ratios = np.clip(np.diff(src) / np.maximum(1.0, np.diff(dst)), 0.25, 4.0)
         idx = np.clip(np.round(src).astype(np.int64), 0, n_in)
         j = np.clip(np.searchsorted(idx, np.arange(s0, s1), side="right") - 1, 0, len(ratios) - 1)
         f = ratios[j]
@@ -215,12 +215,10 @@ def _retime(z, f, semis, opts, src, dst, s0, s1, o):
     good = np.isfinite(meas)
     if good.sum() < 2:
         return z
-    err = meas[good] - expect[good]
-    trend = median_filter(err, size=min(9, len(err) | 1), mode="nearest")
-    keep = np.abs(err - trend) < 0.03 * SR
-    if keep.sum() < 2:
+    meas_clean = warp._smooth_pilot_map(meas, good, expect, max_slope=0.008)
+    if meas_clean is None:
         return z
-    return warp.resample_map(z, meas[good][keep], expect[good][keep], z.shape[1])
+    return warp.resample_map(z, meas_clean, expect, z.shape[1])
 
 
 def chunk_range(k, T, n_out):

@@ -3,8 +3,8 @@ place where the plan switches it on - and the other song, the GUEST, goes on top
 bed's vocal is out, short hooks looped over it, stutters into a section, a one-bar break before the drop.
 Optionally a third song's drums carry the beat, with the bed's own drums under them.
 
-Modelled on a reference mix by the author (an electronic track as the bed, a rap on top, a third song's
-drums), which he held up as what a DJ mix should be (Oct 17). djbrain's part-by-part stem swap lost to it: one
+Modelled on the user's own mix "Time in Parole" (AURA WORLD as the bed, Sir Mix-a-Lot's rap on top, Squarepusher's
+drums), which they held up as what a DJ mix should be (Oct 17). djbrain's part-by-part stem swap lost to it: one
 song's bass under the other's instruments exposed separation artifacts, and its vocals stopped wherever a part
 ended, mid-word. Here the bed's stems stay together and every vocal is a whole phrase.
 
@@ -29,7 +29,7 @@ MAX_LINES = 48
 MAX_BAR = 31               # a line's bar inside its part
 STUTTER = [0, 2, 4, 6]
 EVERY = [1, 2, 4, 8]
-SLICE = 0.5                # project beats per stutter slice (an eighth note, as in the reference mix)
+SLICE = 0.5                # project beats per stutter slice (an eighth note, as in Time in Parole)
 VOCAL_FLOOR = 0.5          # a guest line on chords it fits worse than this (pair-rating scale) is left out
 PH_MIN = 2.0               # source beats: a voiced bit shorter than this (ad-lib, breath, bleed) is not a phrase
 PH_MIN_WORDS = 1.0         # ... unless the transcript has words in it
@@ -41,7 +41,7 @@ TRIM_DB = 30.0             # a phrase starts / ends where its vocal comes within
 EDGE_REACH = 30            # frames (10 ms) a phrase may reach past its voicing for an unvoiced attack or ending
 PICKUP = 1.0               # source beats a bed line may start before its part and still belong to it
 
-# The reference mix, as relations that carry over to other songs: the bed's tracks at the user's settings, the
+# Time in Parole's mix, as relations that carry over to other songs: the bed's tracks at the user's settings, the
 # guest's vocal 2 dB under the bed vocal's own level (the bed vocal itself 5.7 dB down, under it), and the drum
 # donor 5 dB under the bed's own drums (which, layered under the donor, sit at -9.5).
 TEMPLATE = {"drums": dict(gain_db=0.8), "bass": dict(gain_db=-4.3, lpf=8000.0), "other": dict(gain_db=-1.4, hpf=90.0),
@@ -89,7 +89,7 @@ AN ARC: open recognisably (e.g. 2 bars of drums with a hook on top, then the bed
 within 8-16 bars, build, a drop with the guest's strongest line about two thirds in, end on a strong line over the
 bed's last big stretch - no long tail.
 
-THE LISTENER'S OWN REMIX, for reference (an electronic track as the bed, a rap on top, 77 bars):
+THE LISTENER'S OWN REMIX, for reference (AURA WORLD as the bed, Sir Mix-a-Lot's rap on top, 77 bars):
  bars 1-2   drums only, the bed's hook line teased on top
  bars 3-36  the bed from its start, one 34-bar stretch. Its vocal on for bars 3-12, off 13-20 under a guest verse,
             on again 21-29 with the guest rapping over it, off 30-36 under the next guest verse; a short guest phrase

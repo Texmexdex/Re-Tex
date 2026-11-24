@@ -19,13 +19,14 @@ class Job:
         self.kind, self.title, self.ref = kind, title, ref
         self.progress, self.message, self.status = 0.0, "queued", "queued"
         self.error = None
+        self.missing = None          # a component that isn't there (components.Missing): the page offers the fix
         self.created = time.time()
         self.cancelled = False
         self._last = 0.0
 
     def to_dict(self):
         return dict(id=self.id, kind=self.kind, title=self.title, ref=self.ref, progress=round(self.progress, 3),
-                    message=self.message, status=self.status, error=self.error)
+                    message=self.message, status=self.status, error=self.error, missing=self.missing)
 
     def update(self, progress=None, message=None, force=False):
         if self.cancelled:
@@ -98,7 +99,10 @@ def submit(kind, title, fn, ref=None, gpu=False):
                 bus.publish("job", job=job.to_dict())
         except Exception as e:
             traceback.print_exc()
-            job.status, job.error, job.message = "error", f"{type(e).__name__}: {e}", "failed"
+            from . import components
+            job.missing = components.from_text(str(e))     # also when it came back as text from a worker process
+            msg = components.strip(str(e))
+            job.status, job.error, job.message = "error", (msg if job.missing else f"{type(e).__name__}: {msg}"), "failed"
             bus.publish("job", job=job.to_dict())
         finally:
             done_evt.set()

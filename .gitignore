@@ -12,6 +12,12 @@ __pycache__/
 # Downloaded model files (install.bat fetches them; see models/README.md)
 models/*
 !models/README.md
+tools/
+
+# TempoMap sidecar outputs and caches
+tempomap/maps/
+tempomap/cache/
+tempomap/key/
 
 # Scratch
 _*.log

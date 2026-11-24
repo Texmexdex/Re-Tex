@@ -25,6 +25,16 @@ export const S = {
 
 export const STEMS = ["drums", "bass", "other", "vocals"];
 export const STEM_COLORS = { drums: "#df8c55", bass: "#5b9fe0", other: "#6fbf86", vocals: "#d9779f", mix: "#a7a7ad" };
+// MIDI songs (mashlab/midi.py): their parts are their stems ("p1", "p2"...), named in info.stem_names
+export const MIDI_COLORS = ["#c9a227", "#4fb3bf", "#e07a5f", "#81b29a", "#6d9dc5", "#d4a373", "#a3c45a", "#e3b23c"];
+export const isMidiSong = (sid) => String(sid || "").startsWith("midi_");
+export function stemsOf(info) { return info?.kind === "midi" ? (info.stems || []) : STEMS; }
+export function stemLabel(info, st) { return info?.stem_names?.[st] || st; }
+export function stemColor(st, info) {
+  if (STEM_COLORS[st]) return STEM_COLORS[st];
+  const i = (info?.stems || []).indexOf(st);
+  return MIDI_COLORS[(i >= 0 ? i : (parseInt(String(st).slice(1), 10) || 0)) % MIDI_COLORS.length];
+}
 
 export async function fullSong(id) {
   if (!S.full.has(id)) S.full.set(id, api.get(`/api/songs/${id}`).then((x) => { S.fullDone.set(id, x); return x; }));

@@ -5,7 +5,7 @@ import { S, on, emit, edit, setProject, doUndo, doRedo, toast, refreshWaiting, s
 import { lockFor } from "./timing.js";
 import { loadSongs } from "./library.js";
 import { applyState, togglePlay, seekTo, toggleLoop, toggleFollow, toggleMetronome } from "./transport.js";
-import { deleteSel, duplicateSel, splitAtPlayhead, nudgeSel, fit, zoomAt, view, alignSelectionToGrid, clearHighlight, markKey } from "./timeline.js";
+import { deleteSel, duplicateSel, splitAtPlayhead, nudgeSel, fit, zoomAt, view, alignSelectionToGrid, alignSongToGrid, clearHighlight, markKey } from "./timeline.js";
 import { openMashup } from "./mashup.js";
 import { openDjMix } from "./djmix.js";
 import { openReimagine } from "./reimagine.js";
@@ -16,12 +16,15 @@ import { stopAudition } from "./songview.js";
 import { performKey } from "./perform.js";                // Perform mode (off by default): pads on A-L / Z-M
 import { modal, showMenu } from "./ui.js";
 import { songToolItems, openGrid } from "./songtools.js";
+import { showComponent, componentJob, showEarlierFallbacks, markFallbackSeen } from "./components.js";
 
 // ---------------------------------------------------------------- events from the server
 connectEvents((m) => {
-  if (m.type === "hello") { applyState(m.transport); m.jobs.forEach((j) => onJob({ job: j })); return; }
+  if (m.type === "hello") { applyState(m.transport); m.jobs.forEach((j) => onJob({ job: j })); showEarlierFallbacks(); return; }
   if (m.type === "transport") { applyState(m); return; }
   if (m.type === "job") onJob(m);
+  if (m.type === "component_missing") showComponent(m.info);
+  if (m.type === "component_fallback") { showComponent(m.info, { fallback: true }); markFallbackSeen(m.info.key, m.info.since); }
   if (m.type === "renders") refreshWaiting();
   emit("event:" + m.type, m);
 });
@@ -32,7 +35,9 @@ function onJob(m) {
   const j = m.job;
   S.jobs.set(j.id, j);
   if (j.status === "done" || j.status === "cancelled") setTimeout(() => { S.jobs.delete(j.id); renderJobs(); }, 2500);
+  componentJob(j);
   if (j.status === "error") {
+    if (j.missing) showComponent(j.missing);          // what's missing, the fix, a Download button
     toast(`${j.title}: ${j.error}`, true, 8000);
     setTimeout(() => { S.jobs.delete(j.id); renderJobs(); }, 12000);
   }
@@ -61,25 +66,61 @@ function renderJobs() {
 // the drummer's groupings (16ths, then triplets) pull the detector's marks to "148 BPM"; every lock of those marks
 // jumped around, as recorded it sat with the click and kept coming back around to it (the user, a drummer).
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const fmtSecs = (s) => (s >= 90 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${Math.round(s)} s`);
 function lockChoice(title, sid, c, startLock, playAsRecorded = null) {
-  const m = modal("Lock: some parts run at another speed", "");
+  const aud = c.audit;
+  const offBeat = !!(c.off_beat && aud && aud.active_windows > 0);
+  const hasSlips = !!(c.slips && c.slips.length);
+  const m = modal(offBeat && !hasSlips ? "Lock: marks are off the drum hits" : "Lock: some parts would play at another speed", "");
   const p = (text) => { const e = document.createElement("p"); e.textContent = text; m.body.append(e); return e; };
-  p(`Locking pulls every part of "${title}" to its main tempo. In these parts the marks run at a different speed, so locking would play them faster or slower than recorded:`);
-  const ul = document.createElement("ul");
-  for (const [a, b, k] of c.slips) {
-    const li = document.createElement("li");
-    li.textContent = `${mmss(a)}-${mmss(b)}: ${k.toFixed(2)}x the main tempo (${k > 1 ? "it would play slower" : "it would play faster"})`;
-    ul.append(li);
+  if (offBeat) {
+    const sign = aud.signed_median_ms >= 0 ? "+" : "";
+    p(`Measured against "${title}"'s real drum hits, the current beat marks sit ${sign}${Math.round(aud.signed_median_ms)} ms off beat (median ${aud.median_offset_ms.toFixed(0)} ms, max ${aud.max_offset_ms.toFixed(0)} ms across ${aud.bad_windows} of ${aud.active_windows} active sections). Locking to them as they are would bake that offset into the stems.`);
   }
-  m.body.append(ul);
-  p("If it's a studio recording, it most likely keeps one steady tempo all the way and only the drummer's grouping changes there (16ths to triplets, odd groupings) - the marks follow the grouping, not the tempo, and a lock to them would make it speed up and slow down. Then it's best played as recorded: turn on Click and listen - it should keep coming back around to the click. A lock is for takes that really drift (live recordings).");
-  if (c.repair_clears) p("Repair re-counts them where the detector miscounted (the drum hits agree), which fixes it. The repaired marks become this song's marks; the detector's stay available.");
-  else if (c.yours) p("These are marks you made. Line them up by ear in the Beat grid window (it has Repair too, with undo), or lock anyway.");
-  else p("Repair can't fix these: the drums don't confirm a miscount, so they may be real tempo changes (a live take, an outro). Line them up by ear, or lock anyway and listen.");
+  if (hasSlips) {
+    p(`Locking pulls every part of "${title}" to its main tempo. In these parts the marks run at a different speed, so locking would play them faster or slower than recorded:`);
+    const ul = document.createElement("ul");
+    const parts = c.speed?.parts || [];
+    for (const [a, b, k] of c.slips) {
+      const li = document.createElement("li");
+      // a stretch whose beats are uneven (a bunched bar: one long beat, then short ones) plays some slow and some fast
+      const pt = parts.find((q) => Math.abs(q[0] - a) < 0.02 && Math.abs(q[1] - b) < 0.02);
+      li.textContent = pt && pt[3] < 0.8 && pt[4] > 1.2
+        ? `${mmss(a)}-${mmss(b)}: uneven marks - some beats would play as slow as ${pt[3].toFixed(2)}x, others as fast as ${pt[4].toFixed(2)}x`
+        : `${mmss(a)}-${mmss(b)}: ${k.toFixed(2)}x the main tempo (${k > 1 ? "it would play slower" : "it would play faster"})`;
+      ul.append(li);
+    }
+    m.body.append(ul);
+  }
+  const sp = c.speed;
+  if (hasSlips && sp && sp.sec20 >= 1) {
+    const more = (sp.parts?.length || 0) - c.slips.length;
+    p(`All together a lock to these marks would play ${fmtSecs(sp.sec20)} of the song more than 20% off its recorded speed (from ${sp.slowest.toFixed(2)}x to ${sp.fastest.toFixed(2)}x)${more > 0 ? `, in ${sp.parts.length} stretches - the longest are listed` : ""}.`);
+  }
+  if (hasSlips) {
+    p("If it's a studio recording, it most likely keeps one steady tempo all the way and only the drummer's grouping changes there (16ths to triplets, odd groupings) - the marks follow the grouping, not the tempo, and a lock to them would make it speed up and slow down. Then it's best played as recorded: turn on Click and listen - it should keep coming back around to the click. A lock is for takes that really drift (live recordings).");
+  }
+  // Repair (lock.repaired): miscounted stretches re-counted, stretches where the detector lost the beat evened out;
+  // then a smooth lock, which follows drift and never a single beat. c.repair says what that would leave.
+  const rp = c.repair, was = sp?.sec20 || 0;
+  const helps = !!rp && !c.repair_clears && was >= 2 && rp.sec20 <= 0.5 * was;       // not all of it, but most
+  if (offBeat) {
+    p("Verify & lock aligns the beat grid to the zero-phase kick + snare transients first (removing constant phase errors and 2x/0.5x glitches), saves it as the song's grid (older projects keep their old grid), then locks and verifies the rendered drums.");
+  } else if (c.repair_clears) p(`Repair fixes it: it puts the stretches the detector miscounted back on the song's pulse${rp?.method === "neighbours" ? " (and gives even beats to the ones where it lost the beat)" : ""}, then locks the song smoothly - following its drift, never a single beat${rp ? (rp.sec20 < 1 ? ". Nothing would be left playing over 20% off" : `. About ${fmtSecs(rp.sec20)} would be left over 20% off`) : ""}. The repaired marks become this song's marks; the detector's stay available.`);
+  else if (c.yours) p("These are marks you made. Line them up by ear in the Beat grid window (it has Verify and Repair too, with undo), or lock anyway.");
+  else if (helps) p(`Repair fixes most of it: about ${fmtSecs(rp.sec20)} would still play over 20% off instead of ${fmtSecs(was)}${c.left?.length ? ` (${c.left.map(([a, b]) => `${mmss(a)}-${mmss(b)}`).slice(0, 4).join(", ")})` : ""}. What is left may be a real change of tempo - listen there with Click on. The repaired marks become this song's marks; the detector's stay available.`);
+  else if (hasSlips) p("Repair can't fix these: they may be real tempo changes (a live take, an outro). Line them up by ear, or lock anyway and listen.");
   m.footer.hidden = false;
   const btn = (label, cls, fn) => { const b = document.createElement("button"); b.className = cls; b.textContent = label; b.onclick = () => { m.close(); fn(); }; m.footer.append(b); };
-  if (playAsRecorded) btn("Play it as recorded (don't lock)", "primary", playAsRecorded);
-  if (c.repair_clears) btn("Repair, then lock", playAsRecorded ? "" : "primary", () => startLock({ repair: true }));
+  if (offBeat && !S.project?.songs?.[sid]?.marks) {
+    btn("Verify grid to drum hits & lock", "primary", () => startLock({ verify: true, force: true, project: S.project?.id }));
+  }
+  if (playAsRecorded) btn("Play it as recorded (don't lock)", offBeat ? "" : "primary", playAsRecorded);
+  if (c.repair_clears) btn("Repair, then lock", "", () => startLock({ repair: true }));
+  else if (helps) btn(`Repair, then lock (leaves ${fmtSecs(rp.sec20)})`, "", () => startLock({ repair: true, force: true }));
+  if (!offBeat && !S.project?.songs?.[sid]?.marks) {
+    btn("Verify grid to drum hits & lock", "", () => startLock({ verify: true, force: true, project: S.project?.id }));
+  }
   btn("Line it up by ear", "", () => openGrid(sid, S.project?.id));
   btn("Lock anyway", "", () => startLock({ force: true }));
   btn("Cancel", "", () => {});
@@ -88,7 +129,8 @@ function lockChoice(title, sid, c, startLock, playAsRecorded = null) {
 // ---------------------------------------------------------------- per-song controls (transpose / half-double)
 const psEl = document.getElementById("projSongs");
 const lockActions = new Map();                  // song id -> what its lock button does now (Tools / right-click menus)
-on("setLock", ([sid, lockIt]) => lockActions.get(sid)?.[lockIt ? "lock" : "unlock"]());
+const pendingLockSnap = new Set();              // song ids currently locking from this window: snap clips when done
+on("setLock", ([sid, lockIt]) => lockActions.get(sid)?.[lockIt === "smooth" ? "smooth" : lockIt === "repair" ? "repair" : lockIt === "verify" ? "verify" : lockIt ? "lock" : "unlock"]());
 function renderProjSongs() {
   const p = S.project;
   psEl.innerHTML = "";
@@ -124,19 +166,39 @@ function renderProjSongs() {
     const ownGrid = cfg.marks || null, fi = S.fullDone.get(sid);
     if (ownGrid && !fi) fullSong(sid).then(renderProjSongs).catch(() => {});
     const lockOk = ownGrid ? !!(fi && lockFor(projectInfo(fi))) : !!info.lock_ok;
-    const startLock = (body) => api.post(`/api/songs/${sid}/lock`, { ...(body || {}), ...(ownGrid ? { marks: ownGrid } : {}) })
-      .then(() => toast("Locking - warping its stems onto a steady grid, once (about a minute). It switches over by itself.", false, 6000))
-      .catch((e) => toast(e.message, true));
-    const makeLock = async () => {
+    const startLock = (body) => {
+      pendingLockSnap.add(sid);
+      return api.post(`/api/songs/${sid}/lock`, { ...(body || {}), ...(ownGrid ? { marks: ownGrid } : {}) })
+        .then(() => toast("Locking - warping its stems onto a steady grid, once (about a minute). It switches over by itself.", false, 6000))
+        .catch((e) => { pendingLockSnap.delete(sid); toast(e.message, true); });
+    };
+    // kind "smooth": the lock follows the marks' drift, never a single beat (lock.py) - asked for from the Tools menu
+    const makeLock = async (kind = null) => {
       let c = null;
       try { c = ownGrid ? await api.post(`/api/songs/${sid}/lock/check`, { marks: ownGrid }) : await api.get(`/api/songs/${sid}/lock/check`); }
       catch { /* the lock job runs the check itself */ }
-      if (!c?.slips?.length) return startLock();
-      lockChoice(info.title, sid, c, startLock, () => edit((pp) => { delete pp.songs[sid].lock; }, { label: "Play as recorded" }));
+      const go = (body) => startLock({ ...(kind ? { kind } : {}), ...(body || {}) });
+      const slips = kind === "smooth" && c?.smooth ? c.smooth.slips : c?.slips;
+      if (!slips?.length && !c?.off_beat) return go();
+      lockChoice(info.title, sid, c, go, () => edit((pp) => { delete pp.songs[sid].lock; }, { label: "Play as recorded" }));
     };
-    if (cfg.lock && lockOk) {
-      lb.innerHTML = ICONS.lock + "<span>locked</span>"; lb.className = "lock toggle on";
-      lb.title = "Locked to its marks: plays the locked version, every mark on a steady grid. Click to play it as recorded again.";
+    // a lock that plays 2 s or more of the song over 20 % off its recorded speed, or whose verified drum hits sit
+    // off beat, warns on the button and opens the lock report on click
+    const off = !ownGrid && info.lock_off;
+    const aud = !ownGrid && info.lock_audit;
+    const auditOff = !!(aud && aud.status === "off_beat" && aud.active_windows > 0);
+    if (cfg.lock && lockOk && (off || auditOff)) {
+      lb.innerHTML = ICONS.lock + "<span>locked · check</span>"; lb.className = "lock toggle on warn";
+      lb.title = auditOff
+        ? `Locked - but measured drum hits sit ${aud.median_offset_ms.toFixed(0)} ms off the grid (${aud.bad_windows}/${aud.active_windows} sections). Click to inspect and verify & re-lock.`
+        : `Locked - but this lock plays about ${fmtSecs(off)} of the song more than 20% faster or slower than it was recorded (its marks were off there). Click to see where, and to play it as recorded.`;
+      lb.onclick = () => import("./lockreport.js").then((m) => m.lockReport(sid));
+    } else if (cfg.lock && lockOk) {
+      const smooth = !ownGrid && info.lock_kind === "smooth";
+      const audNote = aud && aud.active_windows > 0 ? ` Verified against drum hits: ${aud.median_offset_ms.toFixed(1)} ms median (max ${aud.max_offset_ms.toFixed(1)} ms).` : "";
+      lb.innerHTML = ICONS.lock + `<span>${smooth ? "locked · smooth" : "locked"}</span>`; lb.className = "lock toggle on";
+      lb.title = (smooth ? "Locked smoothly: plays the locked version, pulled onto a steady grid along a smooth line through its marks (it follows drift, never a single beat)."
+        : "Locked to its marks: plays the locked version, every mark on a steady grid.") + audNote + " Click to play it as recorded again.";
       lb.onclick = () => edit((pp) => { delete pp.songs[sid].lock; }, { label: "Unlock song" });
     } else if (cfg.lock) {
       lb.innerHTML = ICONS.lock + (job ? `<span>locking… ${Math.round((job.progress || 0) * 100)}%</span>` : "<span>re-lock</span>");
@@ -146,11 +208,21 @@ function renderProjSongs() {
     } else {
       lb.innerHTML = ICONS.lock; lb.className = "lock";
       lb.title = "Lock to marks: warp this song so every one of its marks sits on a steady grid (made once, then toggles instantly). For songs whose own timing drifts.";
-      lb.onclick = () => { edit((pp) => { pp.songs[sid].lock = true; }, { label: "Lock song" }); if (!lockOk) makeLock(); };
+      lb.onclick = () => {
+        edit((pp) => { pp.songs[sid].lock = true; }, { label: "Lock song" });
+        if (lockOk) alignSongToGrid(sid);
+        else makeLock();
+      };
     }
     lockActions.set(sid, {
-      lock: () => { if (!cfg.lock) edit((pp) => { pp.songs[sid].lock = true; }, { label: "Lock song" }); if (!lockOk && !job) makeLock(); },
+      lock: () => { if (!cfg.lock) edit((pp) => { pp.songs[sid].lock = true; }, { label: "Lock song" }); if (lockOk) alignSongToGrid(sid); else if (!job) makeLock(); },
       unlock: () => edit((pp) => { delete pp.songs[sid].lock; }, { label: "Unlock song" }),
+      // made again even if a lock exists: the smooth one replaces it (same marks, same place; the stems are never touched)
+      smooth: () => { if (!cfg.lock) edit((pp) => { pp.songs[sid].lock = true; }, { label: "Lock song" }); if (!job) makeLock("smooth"); },
+      // the song's grid repaired (it becomes the song's marks), then locked smoothly - for a lock that plays parts off speed
+      repair: () => { if (!cfg.lock) edit((pp) => { pp.songs[sid].lock = true; }, { label: "Lock song" }); if (!job && !ownGrid) startLock({ repair: true, force: true }); },
+      // zero-phase drum-hit-verified grid, saved as the song's grid (freezing older projects), then locked & verified
+      verify: () => { if (!cfg.lock) edit((pp) => { pp.songs[sid].lock = true; }, { label: "Lock song" }); if (!job && !ownGrid) startLock({ verify: true, force: true, project: S.project?.id }); },
     });
     // tuning: as recorded unless you pick A440 or another song of the arrangement to match
     const sel = el.querySelector(".tune"), own = info.tuning_st;
@@ -185,8 +257,22 @@ function renderProjSongs() {
 }
 on("project", renderProjSongs);
 on("songUpdated", renderProjSongs);
-// a lock finished (or went stale): the audio engine has to pick the other version of the song
-on("songUpdated", (id) => { if (S.project?.songs?.[id]?.lock) syncNow(); });
+// a lock finished (or went stale): the audio engine has to pick the other version of the song, and if this window
+// started the lock we snap the song's clips onto the newly locked steady grid so they don't stay off by a fraction
+on("songUpdated", (id) => {
+  if (S.project?.songs?.[id]?.lock) {
+    syncNow();
+    if (pendingLockSnap.has(id) && S.songs.get(id)?.lock_ok) {
+      pendingLockSnap.delete(id);
+      alignSongToGrid(id).then((n) => {
+        const aud = S.songs.get(id)?.lock_audit;
+        const ms = aud && aud.active_windows > 0 ? ` (${aud.median_offset_ms.toFixed(1)} ms median vs drum hits)` : "";
+        if (n > 0) toast(`Locked & snapped ${n} clip${n > 1 ? "s" : ""} onto the grid${ms}`, false, 4500);
+        else if (ms) toast(`Locked & verified${ms}`, false, 4000);
+      });
+    }
+  }
+});
 
 // ---------------------------------------------------------------- projects
 const projName = document.getElementById("projName");

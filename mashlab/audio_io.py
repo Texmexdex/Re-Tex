@@ -57,7 +57,8 @@ def load(path, sr=SR, mono=False):
 def _ffmpeg_decode(path, sr):
     exe = shutil.which("ffmpeg")
     if not exe:
-        raise RuntimeError("ffmpeg not found on PATH - needed to read this file type")
+        from . import components
+        raise components.Missing("ffmpeg")
     cmd = [exe, "-v", "error", "-i", path, "-f", "f32le", "-acodec", "pcm_f32le", "-ac", "2", "-ar", str(sr), "-"]
     raw = subprocess.run(cmd, capture_output=True, check=True).stdout
     y = np.frombuffer(raw, dtype=np.float32).reshape(-1, 2).T.copy()

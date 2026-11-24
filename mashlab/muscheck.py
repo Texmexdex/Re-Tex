@@ -145,6 +145,11 @@ def meter_check(beats, notes, bpb, first, last):
 def transcribe(audio_path, progress=lambda f: None, size="large"):
     """-> [[onset, offset, pitch, instrument]] for an audio file (MuScriptor; GPU if there is one)."""
     global _model
+    from . import components
+    if _model is None and size == "large":
+        components.require("muscriptor")       # its 5 GB model: downloaded only when you press Download
+    if _model is None:
+        components.device("MuScriptor")         # it picks the card itself; this only says so when it can't
     from muscriptor import TranscriptionModel, NoteStartEvent, NoteEndEvent
     with _lock:
         if _model is None:

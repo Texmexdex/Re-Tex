@@ -50,7 +50,7 @@ class NullGenerative(GenerativeBackend):
 
 
 class YuE2Glue(GenerativeBackend):
-    """Optional quality tier: a YuE2 install (<YuE2 folder>/src/yue2). Available only when `yue2` is
+    """Optional quality tier: a local YuE2 install (<your YuE2 folder>/src/yue2). Available only when `yue2` is
     importable. Default off; the generation call is wired in a later FEAT. unload() releases the model."""
 
     name = "yue2"

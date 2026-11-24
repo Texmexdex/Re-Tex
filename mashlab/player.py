@@ -11,6 +11,7 @@ from .config import SR
 from .events import bus
 from .mixer import Mixer
 from . import perform_live
+from . import midi_live
 
 
 def _click(freq, level, dur=0.05):
@@ -220,6 +221,11 @@ class Player:
                         else:
                             self.aud = None
                             bus.publish("audition", playing=False, id=a.get("id"))
+            if midi_live.KEYS.voices:            # the piano roll's keyboard pad (midi_live.py)
+                try:
+                    out += midi_live.KEYS.render(frames)
+                except Exception:
+                    midi_live.KEYS.voices = []
             outdata[:] = np.clip(out * self.volume, -1.0, 1.0).T
         except Exception as e:           # never let the audio thread die
             outdata[:] = 0

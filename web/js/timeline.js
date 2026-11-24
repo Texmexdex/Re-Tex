@@ -1,21 +1,23 @@
 // Arrangement timeline: canvas lanes + DOM track headers.
 // Overlapping clips on a track are laid out in stacked sub-rows so every layer stays visible and grabbable.
 import { ICONS } from "./icons.js";
-import { S, on, emit, edit, uid, clone, fullSong, STEMS, STEM_COLORS, secPerBeat, transportPos, songMult, ensureSongInProject, toast, syncNow, editProjectMarks, projectInfo, useSongGrid, makeSongGrid } from "./state.js";
-import { peaks, peaksHi } from "./api.js";
-import { songToolItems } from "./songtools.js";
+import { S, on, emit, edit, uid, clone, fullSong, STEMS, STEM_COLORS, secPerBeat, transportPos, songMult, ensureSongInProject, toast, syncNow, editProjectMarks, projectInfo, useSongGrid, makeSongGrid, isMidiSong, stemLabel, stemColor } from "./state.js";
+import { api, peaks, peaksHi } from "./api.js";
+import { songToolItems, openGrid } from "./songtools.js";
 import { landing, tempoParts, songMarks, moveMark, addMark, deleteMark, shiftMarks, barStart, setBpb, tapReplace, confirmMarks, lockActive, lockView } from "./timing.js";
 import { pieces, wAtU, uAtW, stretchSpan, resetSpan, setSpanPitch } from "./warps.js";
 import { seekTo } from "./transport.js";
 import { showMenu, modal } from "./ui.js";
 import { openSampleEditor } from "./sampleopen.js";
 import { openReadHead } from "./readhead.js";
+import { openPianoRoll, instrumentDialog, transcribeStem } from "./midi.js";
 
 const SECLANE = 18, RULER = 46, EDGE = 8, FADE_HANDLE = 9, SCROLLBAR = 11;   // RULER = section lane + bar numbers
 const SECTION_NAMES = ["intro", "verse", "pre-chorus", "chorus", "post-chorus", "bridge", "break", "drop", "instrumental", "outro"];
 const SECTION_COLORS = { intro: "#5d6168", verse: "#5d82b0", "pre-chorus": "#5a9aa8", chorus: "#b06a88", "post-chorus": "#a0708a",
   bridge: "#8a7aa8", break: "#4f8f86", drop: "#c48450", instrumental: "#6f9662", outro: "#5d6168" };
 const MIN_PPB = 1.5, MAX_PPB = 4000;                                   // zoom range, px per beat (4000 ~ 0.1-0.2 ms per px)
+const ONGRID_S = 0.02;                                                 // a mark this close to a project beat counts as on it (green)
 let hScale = +(localStorage.getItem("trackScale") || 1) || 1;          // Shift+wheel: taller/shorter tracks
 let waveGain = +(localStorage.getItem("waveGain") || 1) || 1;
 // one decimal at most (the wheel sets it smoothly, e.g. 1.749...), so the button keeps its size
@@ -197,12 +199,20 @@ export function buildHeaders() {
         <button class="fx ${fxOn ? "on" : ""}" title="Track FX: filters, vocal pocket, ducking">fx</button>
       </div>
       <div class="row"><input type="range" class="gain" min="0" max="2" step="0.01" value="${sliderFromDb(t.gain_db)}" title="Track volume (double-click = 0 dB)">
-        <span class="db">${t.gain_db >= 0 ? "+" : ""}${t.gain_db.toFixed(1)} dB</span></div>
+        <span class="db">${t.gain_db >= 0 ? "+" : ""}${t.gain_db.toFixed(1)} dB</span>
+        <button class="fx rh" title="ReadHead: automatic chops on this lane, written as normal clips (one undo step) - arrange its vocal against the rest of the project, or glitch-chop it">ReadHead</button></div>
       <div class="lanes-note"></div>`;
     el.querySelector(".name").onchange = (e) => edit((p) => (p.tracks[i].name = e.target.value), { label: "Rename track" });
     el.querySelector(".m").onclick = () => edit((p) => (p.tracks[i].mute = !p.tracks[i].mute), { label: "Mute track" });
     el.querySelector(".s").onclick = () => edit((p) => (p.tracks[i].solo = !p.tracks[i].solo), { label: "Solo track" });
     el.querySelector(".fx").onclick = (e) => trackFxMenu(i, e);
+    el.querySelector(".rh").onclick = (e) => {
+      e.target.blur();
+      const cs = S.project.clips.filter((c) => c.track === t.id && !c.mute);
+      if (!cs.length) { toast("Put a clip on this lane first - ReadHead chops what's on it", true); return; }
+      // a lane of vocals opens on Arrange vocal, anything else on Glitch chops (the dialog switches between them)
+      openReadHead(t.id, cs.some((c) => c.stem === "vocals") ? "arrange" : "glitch");
+    };
     const g = el.querySelector(".gain"), db = el.querySelector(".db");
     g.oninput = () => {
       const v = Math.round(Math.max(-60, dbFromSlider(+g.value)) * 10) / 10;
@@ -378,6 +388,46 @@ function clipWaveTile(c, tile) {
   entry.tiles.set(tile, cols);
   return cols;
 }
+// ---------------------------------------------------------------- MIDI clips: notes instead of a waveform
+// A MIDI song's part (mashlab/midi.py) keeps its notes in the song's beats; each note is placed through the song's
+// beat landing + the clip's warps exactly like marks and lyric words, so the roll follows lock / timing / stretches.
+const midiData = new Map(), midiLoading = new Set();
+function loadMidi(sid) {
+  if (midiLoading.has(sid)) return;
+  midiLoading.add(sid);
+  api.get(`/api/midi/${sid}`).then((d) => { midiData.set(sid, d); dirty = true; }).catch(() => {}).finally(() => midiLoading.delete(sid));
+}
+export function midiPartOf(c) {
+  const d = midiData.get(c.song);
+  if (!d) { loadMidi(c.song); return null; }
+  return d.parts.find((q) => q.id === c.stem) || null;
+}
+function drawClipNotes(c, x0, top, hh, col, ppb, W) {
+  const part = midiPartOf(c), Lm = landFor(c.song);
+  if (!part || !Lm) { if (!resolved.get(c.song)) loadClipData(c); return; }
+  const ns = part.notes;
+  if (!ns.length) {
+    ctx.fillStyle = hexA(col, 0.5); ctx.font = "11px Segoe UI";
+    ctx.fillText("empty - double-click for the piano roll", x0 + 6, top + Math.min(hh - 4, 16));
+    return;
+  }
+  let lo = 127, hi = 0;
+  for (const n of ns) { lo = Math.min(lo, n[2]); hi = Math.max(hi, n[2]); }
+  const span = Math.max(12, hi - lo + 2), mid = (lo + hi) / 2, top_p = mid + span / 2;
+  const rowH = (hh - 4) / span;
+  const ps = clipPieces(c), w0 = wAtU(ps, 0) - 1e-6, w1 = wAtU(ps, c.len);
+  ctx.fillStyle = hexA(col, c.mute ? 0.25 : 0.9);
+  for (const n of ns) {
+    const wa = wAt(Lm, n[0]), wb = wAt(Lm, n[0] + n[1]);
+    if (wb <= w0 || wa >= w1) continue;
+    const xa = x0 + uAtW(ps, Math.max(wa, w0)) * ppb, xb = x0 + uAtW(ps, Math.min(wb, w1)) * ppb;
+    if (xb < 0 || xa > W) continue;
+    const yy = top + 2 + (top_p - n[2] - 0.5) * rowH;
+    ctx.globalAlpha = 0.45 + 0.55 * (n[3] / 127);
+    ctx.fillRect(xa, yy, Math.max(1, xb - xa - (ppb > 30 ? 1 : 0)), Math.max(1.5, rowH - (rowH > 4 ? 1 : 0)));
+  }
+  ctx.globalAlpha = 1;
+}
 // offset (project beats) from a clip's start to its first source downbeat at/after the start, or null
 // the song's beat marks (timing.js songMarks: yours if you've edited them, else the detector's with sure / unsure
 // flags), or null until its info loads
@@ -400,13 +450,31 @@ function downbeatOffset(c) {
   const d = clipDownbeats(c);
   return d.length ? d[0] - c.start : null;
 }
+// A locked song's audio is already on a steady grid: its marks sit a few ms either side of it (a smooth lock lets
+// them), so lining up ONE mark would shift the whole clip by that mark's error - grabbed at different spots, the
+// stems of one song ended up 3-22 ms apart (Nov 18, Hooker With A Penis: starts 6.009 / 5.990 / 5.940). For a
+// locked song the offset is moved to the clip's own grid: the whole-beat count of the mark, plus the fraction most
+// of its marks share (a circular mean over its sure marks).
+function gridPhase(c, off) {
+  if (off == null || !isLocked(c.song)) return off;
+  const step = songMult(S.project, c.song) / rateOf(c);
+  if (!(step > 1e-6)) return off;
+  let sx = 0, sy = 0;
+  for (const o of clipMarks(c)) if (o.sure) {
+    const a = 2 * Math.PI * (o.x - c.start) / step;
+    sx += Math.cos(a); sy += Math.sin(a);
+  }
+  if (!sx && !sy) return off;
+  const f = (Math.atan2(sy, sx) / (2 * Math.PI)) * step;
+  return Math.round((off - f) / step) * step + f;
+}
 // offset from a clip's start to its sure downbeat nearest project beat `at` (where you grabbed it), or null
 function nearestDownbeatOffset(c, at) {
   const d = clipDownbeats(c);
   if (!d.length) return null;
   let best = d[0];
   for (const x of d) if (Math.abs(x - at) < Math.abs(best - at)) best = x;
-  return best - c.start;
+  return gridPhase(c, best - c.start);
 }
 // the audio moment (seconds) at project beat `beat` inside clip c
 function timeAt(c, beat) {
@@ -551,16 +619,102 @@ function clipLyricWords(c) {
 
 export function alignSelectionToGrid() {
   let n = 0;
+  const bp = bpb();
+  const wrapMod = (v, m) => (((v % m) + m) % m);
   edit((p) => {
-    for (const c of p.clips) {
-      if (!S.selClips.has(c.id)) continue;
-      const off = downbeatOffset(c);
-      if (off == null) continue;
-      const d = c.start + off, target = Math.round(d / bpb()) * bpb();
-      c.start = Math.max(0, c.start + (target - d)); n++;
+    const sel = p.clips.filter((c) => S.selClips.has(c.id));
+    // Group clips by song so multi-stem selections that are already in relative sync move together
+    // instead of splitting stems a bar apart when one sits near beat 0 or halfway between bars.
+    const bySong = new Map();
+    for (const c of sel) {
+      if (!bySong.has(c.song)) bySong.set(c.song, []);
+      bySong.get(c.song).push(c);
+    }
+    for (const grp of bySong.values()) {
+      const items = grp.map((c) => ({ c, off: gridPhase(c, downbeatOffset(c)) })).filter((x) => x.off != null);
+      if (!items.length) continue;
+      // Check if all clips in this song group currently share the same bar-phase (within 0.05 beats)
+      const ph0 = wrapMod(items[0].c.start + items[0].off, bp);
+      const synced = items.length > 1 && items.every((x) => {
+        const dp = Math.abs(wrapMod((x.c.start + x.off) - ph0 + bp / 2, bp) - bp / 2);
+        return dp < 0.05;
+      });
+      if (synced) {
+        const lead = items.reduce((a, b) => (b.c.start < a.c.start ? b : a));
+        const d = lead.c.start + lead.off;
+        const target = Math.round(d / bp) * bp;
+        let delta = target - d;
+        const minStart = Math.min(...items.map((x) => x.c.start));
+        while (minStart + delta < -1e-4) delta += bp;
+        for (const { c } of items) { c.start = Math.round(Math.max(0, c.start + delta) * 1e6) / 1e6; n++; }
+      } else {
+        for (const { c, off } of items) {
+          const d = c.start + off, target = Math.round(d / bp) * bp;
+          let nextStart = c.start + (target - d);
+          while (nextStart < -1e-4) nextStart += bp;
+          c.start = Math.round(Math.max(0, nextStart) * 1e6) / 1e6; n++;
+        }
+      }
     }
   }, { label: "Align to grid" });
   toast(n ? `Lined up ${n} clip${n > 1 ? "s" : ""}: downbeats now sit on bar lines` : "Couldn't find downbeats for the selection yet - try again in a second");
+}
+
+// Snap a locked song's clips onto the project beat grid by the smallest sub-beat correction (preserving bar
+// position and relative alignment between stems), called when Lock toggles on or finishes rendering.
+export async function alignSongToGrid(sid) {
+  if (!S.project) return 0;
+  try {
+    const fresh = await fullSong(sid);
+    if (fresh) resolved.set(sid, fresh);
+  } catch { return 0; }
+  if (!isLocked(sid)) return 0;
+  const mine = S.project.clips.filter((c) => c.song === sid);
+  if (!mine.length) return 0;
+  const bp = bpb();
+  const wrapMod = (v, m) => (((v % m) + m) % m);
+  const items = mine.map((c) => {
+    let off = downbeatOffset(c);
+    if (off == null) {
+      const m = clipMarks(c).find((o) => o.sure);
+      off = m ? m.x - c.start : null;
+    }
+    return { c, off: gridPhase(c, off) };
+  }).filter((x) => x.off != null);
+  if (!items.length) return 0;
+  const ph0 = wrapMod(items[0].c.start + items[0].off, 1);
+  const synced = items.every((x) => Math.abs(wrapMod((x.c.start + x.off) - ph0 + 0.5, 1) - 0.5) < 0.05);
+  let moved = 0;
+  if (synced) {
+    const lead = items.reduce((a, b) => (b.c.start < a.c.start ? b : a));
+    const d = lead.c.start + lead.off;
+    let delta = Math.round(d) - d;
+    if (Math.abs(delta) < 1e-4) return 0;
+    const minStart = Math.min(...items.map((x) => x.c.start));
+    while (minStart + delta < -1e-4) delta += 1;
+    edit((p) => {
+      for (const { c } of items) {
+        const live = p.clips.find((k) => k.id === c.id);
+        if (live) { live.start = Math.round(Math.max(0, live.start + delta) * 1e6) / 1e6; moved++; }
+      }
+    }, { label: "Snap locked song to grid" });
+  } else {
+    const shifts = items.map(({ c, off }) => {
+      const d = c.start + off;
+      let delta = Math.round(d) - d;
+      while (c.start + delta < -1e-4) delta += 1;
+      return { id: c.id, delta };
+    }).filter((x) => Math.abs(x.delta) >= 1e-4);
+    if (!shifts.length) return 0;
+    edit((p) => {
+      for (const { id, delta } of shifts) {
+        const live = p.clips.find((k) => k.id === id);
+        if (live) { live.start = Math.round(Math.max(0, live.start + delta) * 1e6) / 1e6; moved++; }
+      }
+    }, { label: "Snap locked song to grid" });
+  }
+  dirty = true;
+  return moved;
 }
 function beatTime(beats, nb, b) {
   const i = Math.max(0, Math.min(nb - 2, Math.floor(b)));
@@ -587,6 +741,7 @@ function loadClipData(c) {
 }
 export function forgetSong(id) {
   resolved.delete(id);
+  midiData.delete(id);
   for (const k of [...peakData.keys()]) if (k.startsWith(id + "/")) peakData.delete(k);
   for (const k of [...hiData.keys()]) if (k.startsWith(id + "/")) hiData.delete(k);
   waveCache.clear();
@@ -831,7 +986,7 @@ function draw() {
     const r = clipRect(c, ti);
     const { x0, x1, y, h } = r;
     if (x1 < 0 || x0 > W || y > H || y + h < RULER) continue;
-    const col = STEM_COLORS[c.stem] || p.tracks[ti].color;
+    const col = STEM_COLORS[c.stem] || (isMidiSong(c.song) ? stemColor(c.stem, S.fullDone.get(c.song)) : null) || p.tracks[ti].color;
     const sel = S.selClips.has(c.id);
     const rate = rateOf(c), pitch = c.pitch || 0;
     const head = h >= 40 ? 15 : 12;
@@ -839,8 +994,9 @@ function draw() {
     ctx.beginPath(); roundRect(ctx, x0, y, Math.max(2, x1 - x0), h, 5); ctx.clip();
     ctx.fillStyle = hexA(col, c.mute ? 0.04 : sel ? 0.2 : 0.11); ctx.fillRect(x0, y, x1 - x0, h);
     ctx.fillStyle = hexA(col, c.mute ? 0.12 : 0.4); ctx.fillRect(x0, y, x1 - x0, head);
-    // waveform (only the tiles on screen)
-    {
+    // waveform (only the tiles on screen) - or, for a MIDI part, its notes
+    if (isMidiSong(c.song)) drawClipNotes(c, x0, y + head, h - head, col, ppb, W);
+    else {
       const mid = y + head + (h - head) / 2, amp = (h - head - 4) / 2 * Math.pow(10, (c.gain_db || 0) / 40) * waveGain;
       ctx.fillStyle = hexA(col, c.mute ? 0.14 : 0.42);
       const ncol = Math.max(1, Math.ceil(c.len * ppb));
@@ -881,18 +1037,45 @@ function draw() {
       }
       run = null;
     };
+    // bars shifted: the beats are on the grid but the song's 1s fall mid-bar (Nov 18: red used to mean both, and a
+    // locked song with red stretches read as broken). A blue band per stretch says by how many beats.
+    let shift = null;                                   // { x (start), k (beats into the project's bar) }
+    const endShift = (xe) => {
+      if (!shift) return;
+      const xa = Math.max(beatToX(shift.x), x0), xb = Math.min(beatToX(xe), x1);
+      if (xb > xa) {
+        ctx.fillStyle = "rgba(120,170,255,.10)"; ctx.fillRect(xa, y + head, xb - xa, h - head);
+        ctx.fillStyle = "rgba(120,170,255,.9)"; ctx.fillRect(xa, y + h - 3, xb - xa, 2);
+        if (h - head > 30 && xb - xa > 150) {
+          ctx.font = "600 9px Segoe UI, system-ui, sans-serif";
+          ctx.fillText(`bars start on beat ${shift.k + 1} here - beats are on the grid (right-click to fix)`, xa + 4, y + h - 8);
+        }
+      }
+      shift = null;
+    };
     for (let i = 0; i < mk.length; i++) {
       const o = mk[i];
       if (!o.sure && run == null) run = o.x;
       if (o.sure && run != null) endRun(o.x);
+      if (o.down && o.sure) {
+        const tolS = ONGRID_S * S.project.bpm / 60, r = Math.round(o.x);
+        const k = Math.abs(o.x - r) < tolS ? ((r % bp) + bp) % bp : 0;
+        if (shift && shift.k !== k) endShift(o.x);
+        if (k && !shift) shift = { x: o.x, k };
+      }
       const show = dense || markMode || (o.down && mk.length > 1);
       if (!show) continue;
       const x = Math.round(beatToX(o.x)) + 0.5;
       if (x < x0 || x > x1) continue;
-      const onGrid = o.down ? Math.abs(o.x / bp - Math.round(o.x / bp)) < 0.02 : Math.abs(o.x - Math.round(o.x)) < 0.02;
-      const col = !o.sure ? "255,190,70" : onGrid ? "110,240,160" : "255,78,96";
+      // on the grid = within ONGRID_S of a project beat (a bar line, for a downbeat): the marks themselves are only
+      // good to ~10 ms, and a smooth lock lets them sit up to 15 ms off its line - 0.02 beat (6.5 ms at 184 BPM)
+      // painted half of a properly locked song red (Nov 18)
+      const tolB = ONGRID_S * S.project.bpm / 60;
+      const onBeat = Math.abs(o.x - Math.round(o.x)) < tolB;            // red = ONLY a beat off the grid
+      const onBar = !o.down || Math.abs(o.x - bp * Math.round(o.x / bp)) < tolB;
+      const col = !o.sure ? "255,190,70" : !onBeat ? "255,78,96" : !onBar ? "120,170,255" : "110,240,160";
       const hot = markMode && hoverMark && hoverMark.clip === c && hoverMark.k === o.k;
-      const off = o.sure && !onGrid, wd = off ? 2 : 1, xo = off ? x - 0.5 : x;
+      const off = o.sure && !onBeat, wd = off ? 2 : 1, xo = off ? x - 0.5 : x;   // (a bar shift: its own colour, normal width)
       if (o.down) {                                    // downbeat: a tick at the top + a line down the clip
         ctx.fillStyle = `rgba(${col},${off ? 1 : o.sure ? 0.95 : 0.85})`; ctx.fillRect(xo, y + head, wd, off ? 10 : 7);
         ctx.fillStyle = `rgba(${col},${off ? 0.6 : o.sure ? 0.26 : 0.3})`; ctx.fillRect(xo, y + head + (off ? 10 : 7), wd, h - head - (off ? 10 : 7));
@@ -908,6 +1091,7 @@ function draw() {
       }
     }
     if (run != null) endRun(mk[mk.length - 1].x + 1);
+    if (shift) endShift(mk[mk.length - 1].x + 1);
     // beats you're tapping right now
     if (tap && tap.info === resolved.get(c.song)) {
       const L = landFor(c.song), ps = clipPieces(c);
@@ -994,7 +1178,7 @@ function draw() {
     else if (resolved.get(c.song)?.user_marks) tags.push("your grid");
     if (waiting.has(c.id)) tags.push("warping… (playing preview)");
     else if (preview.has(c.id)) tags.push("HQ…");
-    ctx.fillText(`${c.sec ? c.sec + " · " : ""}${c.stem} · ${name}${tags.length ? "   " + tags.join("  ") : ""}`, Math.max(x0, 0) + 5, y + head - 3.5);
+    ctx.fillText(`${c.sec ? c.sec + " · " : ""}${stemLabel(S.fullDone.get(c.song) || S.songs.get(c.song), c.stem)} · ${name}${tags.length ? "   " + tags.join("  ") : ""}`, Math.max(x0, 0) + 5, y + head - 3.5);
     ctx.restore();
     // outline + handles
     ctx.strokeStyle = sel ? "#fff" : hexA(col, 0.55);
@@ -1023,12 +1207,14 @@ function draw() {
     const d = S.drag, g = d.over;
     const mult = p.songs[d.payload.song] ? songMult(p, d.payload.song) || 1 : guessMult(d.payload.song);
     const pcs = d.payload.pieces;
-    const stems = STEMS.filter((st) => pcs.some((q) => q.stems.includes(st)));
+    const midiSong = isMidiSong(d.payload.song);
+    const stems = midiSong ? [...new Set(pcs.flatMap((q) => q.stems))] : STEMS.filter((st) => pcs.some((q) => q.stems.includes(st)));
     stems.forEach((st, k) => {
-      const ti = stems.length === 1 ? g.track : roleTrack(st);
+      const ti = stems.length === 1 ? g.track : midiSong ? p.tracks.findIndex((t) => t.midi?.song === d.payload.song && t.midi?.part === st) : roleTrack(st);
       const y = ti >= 0 ? trackY(ti) + 3 : trackY(p.tracks.length + k) + 3;
-      ctx.fillStyle = hexA(STEM_COLORS[st], 0.3);
-      ctx.strokeStyle = STEM_COLORS[st];
+      const gc = stemColor(st, S.fullDone.get(d.payload.song));
+      ctx.fillStyle = hexA(gc, 0.3);
+      ctx.strokeStyle = gc;
       ctx.setLineDash([5, 4]);
       for (const q of pcs) {
         if (!q.stems.includes(st)) continue;
@@ -1352,10 +1538,12 @@ function onDrag(e) {
         S.selClips = new Set(copies.map((c) => c.id));
         drag.dupDone = true;
       }
+      const minStart = Math.min(...drag.orig.map((o) => o.start));
+      const dClamped = Math.max(-minStart, d);
       for (const o of drag.orig) {
         const c = pp.clips.find((k) => k.id === o.id);
         if (!c) continue;
-        c.start = Math.max(0, o.start + d);
+        c.start = Math.max(0, o.start + dClamped);
         const ti = Math.max(0, Math.min(pp.tracks.length - 1, trackIndex(o.track) + tDelta));
         c.track = pp.tracks[ti].id;
       }
@@ -1453,6 +1641,7 @@ canvas.addEventListener("dblclick", (e) => {
     if (info && t != null && !markAt(h.clip, e.offsetX, 3)) editProjectMarks(info, (m) => addMark(m, t), { label: "Add mark" });
     return;
   }
+  if (h && isMidiSong(h.clip.song)) { openPianoRoll(h.clip.song, h.clip.stem); return; }   // a MIDI part: its piano roll
   if (h) emit("openClip", h.clip.id);
 });
 
@@ -1481,8 +1670,16 @@ canvas.addEventListener("contextmenu", (e) => {
   // beat marks: fix what the detector got wrong - marks only (the audio never moves); saved with the song, so
   // every project shows them; Ctrl+Z works
   const info = resolved.get(c.song), Lm = landFor(c.song), mk = marksFor(c.song);
-  const markItems = [];
+  const markItems = [], barFix = [];
   if (info && Lm && mk && isLocked(c.song)) markItems.push(["Locked to its marks - unlock it in the arrangement bar to edit them"]);
+  // bars that aren't the song's beats-a-bar long shift its 1s off the project's bar lines (the blue bands): counting
+  // every bar evenly fixes that without moving a beat - in the Beat grid window, to hear first, then save
+  if (info && mk) {
+    let odd = 0, prev = -1;
+    for (let k = 0; k < mk.down.length; k++) if (mk.down[k]) { if (prev >= 0 && k - prev !== mk.bpb) odd++; prev = k; }
+    if (odd) barFix.push([`Its bars shift: ${odd} bar${odd > 1 ? "s aren't" : " isn't"} ${mk.bpb} beats - count every bar in ${mk.bpb} (Beat grid)…`,
+      () => openGrid(c.song, S.project.songs[c.song] ? S.project.id : null, "fix=bars")], "-");
+  }
   else if (info && Lm && mk) {
     const t = timeAt(c, beat), p = 60 / info.bpm;
     const em = (fn, label) => editProjectMarks(info, fn, { label });
@@ -1517,7 +1714,16 @@ canvas.addEventListener("contextmenu", (e) => {
   const transItems = TRANSITION_TYPES.map((t) =>
     [`  ${t.label}`, () => addTransition(c, boundary, t), ""]);
   const tools = songToolItems(c.song, { head: false });
+  const midiItems = isMidiSong(c.song) ? [
+    [`Piano roll: ${stemLabel(S.fullDone.get(c.song), c.stem)}…`, () => openPianoRoll(c.song, c.stem), "dbl-click"],
+    ["Instrument…", () => instrumentDialog(c.song, c.stem)],
+    "-",
+  ] : STEMS.includes(c.stem) && !String(c.song).startsWith("smp_") ? [
+    [`Turn the ${c.stem} into MIDI (MuScriptor)`, () => transcribeStem(c.song, c.stem)],
+  ] : [];
   showMenu(e, [
+    ...barFix,
+    ...midiItems,
     ...hlItems,
     [`${(S.songs.get(c.song)?.title || c.song).slice(0, 40)}: all its tools ▸`, () => showMenu(e, songToolItems(c.song))],
     ...tools.slice(0, 2),
@@ -1697,13 +1903,22 @@ export function dropPayload() {
   // (landing): one section, or a whole song laid in section by section, each section its own clip
   const { song, pieces: secs } = d.payload;
   const g = d.over;
-  const stems = STEMS.filter((st) => secs.some((q) => q.stems.includes(st)));
+  const midiSong = isMidiSong(song), minfo = S.fullDone.get(song);
+  const stems = midiSong ? [...new Set(secs.flatMap((q) => q.stems))] : STEMS.filter((st) => secs.some((q) => q.stems.includes(st)));
   const ids = [];
   edit((p) => {
     ensureSongInProject(p, song);
     const mult = songMult(p, song);
+    const added = [];
     stems.forEach((st) => {
-      let ti = stems.length === 1 && g.track >= 0 ? g.track : p.tracks.findIndex((t) => t.role === st);
+      let ti = stems.length === 1 && g.track >= 0 ? g.track
+        : midiSong ? p.tracks.findIndex((t) => t.midi?.song === song && t.midi?.part === st)
+        : p.tracks.findIndex((t) => t.role === st);
+      if (ti < 0 && midiSong) {
+        // a MIDI part gets a lane of its own, named after the part (track.midi: which part it was made for)
+        p.tracks.push({ id: uid("t"), name: stemLabel(minfo, st), role: "midi", color: stemColor(st, minfo), gain_db: 0, pan: 0, mute: false, solo: false, hpf: 0, lpf: 0, duck: 0, pocket: 0, midi: { song, part: st } });
+        ti = p.tracks.length - 1;
+      }
       if (ti < 0) {
         p.tracks.push({ id: uid("t"), name: st[0].toUpperCase() + st.slice(1), role: st, color: STEM_COLORS[st], gain_db: 0, pan: 0, mute: false, solo: false, hpf: 0, lpf: 0, duck: 0, pocket: 0 });
         ti = p.tracks.length - 1;
@@ -1714,9 +1929,27 @@ export function dropPayload() {
         const joined = i + 1 < mine.length && Math.abs(mine[i + 1].off - (q.off + q.len)) < 1e-9;
         const c = { id: uid("c"), track: p.tracks[ti].id, song, stem: st, start: g.beat + q.off * mult, src: q.src, len: q.len * mult, gain_db: 0, fade_in: 0, fade_out: joined ? 0 : 0.05, mute: false, rate: 1, pitch: 0, keep_pitch: true };
         if (q.name) c.sec = q.name;
-        p.clips.push(c); ids.push(c.id);
+        p.clips.push(c); ids.push(c.id); added.push(c);
       });
     });
+    // If the song has user_marks or an active lock, align the dropped group's real downbeat onto g.beat so
+    // the very first drop lands dead-on the project bar line (instead of the old detector bar offset).
+    if (!d.fine && added.length && minfo && !midiSong) {
+      if (!resolved.has(song)) resolved.set(song, minfo);
+      const lead = added.reduce((a, b) => (b.start < a.start ? b : a));
+      const off = gridPhase(lead, downbeatOffset(lead));
+      if (off != null) {
+        const bp = bpb();
+        const err = (((lead.start + off - g.beat) % bp) + bp) % bp;
+        const delta = err <= bp / 2 ? -err : bp - err;
+        if (Math.abs(delta) > 1e-4 && Math.abs(delta) < bp * 0.49) {
+          const minStart = Math.min(...added.map((c) => c.start));
+          let shift = delta;
+          if (minStart + shift < -1e-4) shift += bp;
+          for (const c of added) c.start = Math.round(Math.max(0, c.start + shift) * 1e6) / 1e6;
+        }
+      }
+    }
     S.selClips = new Set(ids);
   }, { label: secs.length > 1 ? `Add ${secs.length} sections` : "Add clip" });
   if (S.project.clips.length === ids.length) fit();

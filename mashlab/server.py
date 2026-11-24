@@ -26,8 +26,10 @@ app.mount("/static", StaticFiles(directory=WEB), name="static")
 # Bumped whenever the server API the UI talks to changes, so a browser can't keep running an old copy of the
 # interface against newer endpoints even if no UI file's mtime changed. FEAT-004 added /api/mashup/auto,
 # /api/songs/{id}/lyrics, /api/songs/{id}/backfill_beat_content, the capabilities detect() block, and
-# lyrics_mode on the rate/table/generate bodies.
-UI_TAG_SALT = "settings-1"
+# lyrics_mode on the rate/table/generate bodies. "grid-1": /api/mashup/grid (the Auto-Mashup dialog's Pick stems tab).
+# "grid-2": its opts (follow by stretching / cutting, vocals take turns, grids as they are).
+# "tempomap-1": /tempomap, /api/songs/{id}/tempomap (the TempoMap sidecar).
+UI_TAG_SALT = "tempomap-1"
 
 
 def _ui_tag():
@@ -108,7 +110,9 @@ def cancel_job(jid: int):
 
 @app.get("/api/songs")
 def songs():
-    return library.list_songs() + library.list_samples()      # samples: kind "sample", for the arrangement only
+    from . import midi
+    return library.list_songs() + library.list_samples() + midi.list_songs()   # samples (kind "sample") and MIDI songs
+                                                                                # (kind "midi") live in their own folders
 
 
 @app.get("/api/folders")
@@ -137,7 +141,7 @@ async def put_library_meta(request: Request):
     """Body {ids: [...], set: {artist?, album?, genre?, year?}} - "" clears the user's value (back to the tags)."""
     from . import libmeta
     b = await request.json()
-    ids = [str(i) for i in (b.get("ids") or []) if (library.SONGS / str(i)).exists()]
+    ids = [str(i) for i in (b.get("ids") or []) if library.song_dir(str(i)).exists()]   # (MIDI songs too)
     if not ids:
         raise HTTPException(400, "no songs")
     return {"meta": libmeta.set_user(ids, b.get("set") or {})}
@@ -163,7 +167,8 @@ async def listen_songs(request: Request):
     from . import libmeta, listen
     ok, why = listen.available()
     if not ok:
-        raise HTTPException(400, f"Listening isn't set up: {why}")
+        from . import components
+        raise components.Missing("flamingo", why)
     b = await request.json()
     ready = [s["id"] for s in library.list_songs() if s.get("status") == "ready"]
     ids = [i for i in (b.get("ids") or ready) if i in set(ready)]
@@ -201,6 +206,9 @@ def song(sid: str):
     info = library.read(sid)
     if not info:
         raise HTTPException(404, "no such song")
+    if info.get("kind") == "midi":                   # MIDI songs (midi.py): no form / lyrics to work out
+        info["form"], info["lyrics"] = None, None
+        return info
     from . import songform, userlyrics
     try:
         info["form"] = songform.form(sid, info)      # intro / verse / chorus ... for the song view (songform.py)
@@ -256,6 +264,18 @@ async def put_form(sid: str, request: Request):
         raise HTTPException(400, str(e))
 
 
+def _spans(x):
+    """TempoMap's "gridded by rule" spans kept with the marks (the Beat grid window shows them): checked shape only."""
+    out = []
+    for s in x if isinstance(x, list) else []:
+        try:
+            out.append(dict(start=round(float(s["start"]), 3), end=round(float(s["end"]), 3),
+                            kind=str(s.get("kind", ""))[:20], note=str(s.get("note", ""))[:400]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out[:200]
+
+
 @app.put("/api/songs/{sid}/marks")
 async def put_marks(sid: str, request: Request):
     """The song's own grid: your beat marks for it (seconds + downbeat flags; null = the detector's again) - what
@@ -274,7 +294,8 @@ async def put_marks(sid: str, request: Request):
         c = m.get("c")                    # beats you placed yourself (Ctrl+drag): their bars keep their shape
         m = dict(t=[round(float(x), 5) for x in t], d=[int(x) for x in d], s=[1 if x else 0 for x in s],
                  bpb=int(m.get("bpb") or 0) or None, **({"p0": int(p0)} if isinstance(p0, (int, float)) and 0 <= p0 < len(t) else {}),
-                 **({"c": [1 if x else 0 for x in c]} if isinstance(c, list) and len(c) == len(t) and any(c) else {}))
+                 **({"c": [1 if x else 0 for x in c]} if isinstance(c, list) and len(c) == len(t) and any(c) else {}),
+                 **({"spans": _spans(m.get("spans"))} if m.get("spans") else {}))
     frozen, old = P.set_song_grid(sid, m, from_project=body.get("project"))
     # the open page applies the same copy to a frozen project it has open (else its next autosave would drop it)
     return {"ok": True, "frozen": frozen, "old": old if frozen else None}
@@ -294,6 +315,33 @@ async def reseparate(sid: str, request: Request):
     return library.reseparate(sid, b.get("quality", library.default_quality())).to_dict()
 
 
+# ---------------------------------------------------------------- components: what Re-Tex needs, missing / fallback
+
+from . import components as _components
+
+
+@app.exception_handler(_components.Missing)
+async def _missing(request, exc):
+    """A model / library / program isn't there: 424 with what it is, the error, the fix, a link, and whether it can
+    be downloaded from here - the page shows it as a dialog (web/js/components.js)."""
+    return JSONResponse({"detail": str(exc), "missing": exc.info}, status_code=424)
+
+
+@app.get("/api/components")
+def components_list():
+    return {"items": _components.status(), "fallbacks": _components.fallbacks(), "since": _components.START}
+
+
+@app.post("/api/components/{key}/download")
+def components_download(key: str):
+    if key not in _components.C:
+        raise HTTPException(404, "no such component")
+    i = _components.info(key)
+    if not i["download"]:
+        raise HTTPException(400, f"{i['name']} can't be downloaded from here: {i['fix']} ({i['url']})")
+    return jobs.submit("download", f"Download {i['name']}", lambda job: _components.download(key, job)).to_dict()
+
+
 @app.get("/api/capabilities")
 def capabilities():
     from .separate import ultra_available, sw_available
@@ -311,23 +359,34 @@ def reanalyze(sid: str):
 async def lock_song(sid: str, request: Request):
     """🔒 Make the song's locked-to-its-marks stems (once; a background job). Projects switch per song.
     Body (optional): {"force": true} locks without the wrong-speed check (the user heard the warning and chose
-    to); {"repair": true} repairs the detector's marks first (lock.repair_and_make); {"marks": {...}} locks to a
-    project's own timing for the song instead of the song's grid (kept next to the song's own lock)."""
+    to); {"repair": true} repairs the detector's marks first (lock.repair_and_make); {"verify": true} builds a
+    zero-phase drum-hit-verified grid, saves it as the song's grid (freezing older projects), and locks to it;
+    {"marks": {...}} locks to a project's own timing for the song instead of the song's grid (kept next to the
+    song's own lock); {"kind": "smooth"} follows the marks' drift instead of every single mark (lock.py)."""
     if not library.read(sid):
         raise HTTPException(404, "no such song")
     from . import lock
     b = await request.json() if (await request.body()) else {}
-    if b.get("repair") and not b.get("marks"):
+    if b.get("verify") and not b.get("marks"):
         try:
-            return await asyncio.to_thread(lock.repair_and_make, sid)
+            return await asyncio.to_thread(lock.verify_and_make, sid,
+                                           "smooth" if b.get("kind") == "smooth" else "marks",
+                                           bool(b.get("force")), b.get("project") or None)
         except ValueError as e:
             raise HTTPException(400, str(e))
-    return lock.make(sid, check=not b.get("force"), marks=b.get("marks") or None)
+    if b.get("repair") and not b.get("marks"):
+        try:
+            return await asyncio.to_thread(lock.repair_and_make, sid, "marks" if b.get("kind") == "marks" else "smooth",
+                                           bool(b.get("force")))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    return lock.make(sid, check=not b.get("force"), marks=b.get("marks") or None,
+                     kind="smooth" if b.get("kind") == "smooth" else "marks")
 
 
 @app.get("/api/songs/{sid}/lock/check")
 def lock_check(sid: str):
-    """Before locking: stretches the lock would play at the wrong speed, and whether Repair clears them."""
+    """Before locking: stretches the lock would play at the wrong speed, drum-hit audit, and whether Repair clears them."""
     if not library.read(sid):
         raise HTTPException(404, "no such song")
     from . import lock
@@ -342,6 +401,35 @@ async def lock_check_marks(sid: str, request: Request):
     from . import lock
     b = await request.json() if (await request.body()) else {}
     return await asyncio.to_thread(lock.check, sid, b.get("marks") or None)
+
+
+@app.get("/api/songs/{sid}/lock/report")
+async def lock_report(sid: str):
+    """What the song's lock did to its speed (lock.did) and its real zero-phase drum-hit verification (audit)."""
+    info = library.read(sid)
+    if not info:
+        raise HTTPException(404, "no such song")
+    from . import lock
+    lk = info.get("lock") or {}
+    speed = lock.did(info) if lk else None
+    audit = lk.get("audit")
+    if lk and audit is None and not lock.is_take(info):
+        try:
+            audit = await asyncio.to_thread(lock.audit_existing, sid, info, lk)
+        except Exception:
+            audit = None
+    return {"id": sid, "title": info.get("title", sid), "locked": bool(lk),
+            "current": lock.current(info) is not None, "speed": speed, "audit": audit,
+            "kind": lk.get("kind") or "marks", "yours": bool((info.get("user_marks") or {}).get("t")),
+            "fix": lock.fix_of(info) if speed and speed["sec20"] >= lock.WRONG_SEC else None}
+
+
+@app.get("/api/locks")
+async def locks_report():
+    """Every locked song with what its lock did to the song's speed (lock.report_all), the most changed first - to
+    review locks that play parts of a song faster or slower than recorded."""
+    from . import lock
+    return await asyncio.to_thread(lock.report_all)
 
 
 @app.post("/api/songs/{sid}/muscheck")
@@ -419,15 +507,29 @@ async def patch_song(sid: str, request: Request):
     return info
 
 
+def _stem_sum(ys):
+    """Stems added together; shorter ones count as silence at the end (a MIDI song's parts made before 2026-11-08
+    can differ in length)."""
+    n = max(y.shape[1] for y in ys)
+    out = np.zeros((2, n), np.float32)
+    for y in ys:
+        out[:, :y.shape[1]] += y
+    return out
+
+
+def _midi_part(sid, stem):                 # a MIDI song's parts are its stems (midi.py): p1, p2, ...
+    return str(sid).startswith("midi_") and re.fullmatch(r"p\d+", str(stem)) is not None
+
+
 @app.get("/api/songs/{sid}/peaks/{stem}")
 def peaks(sid: str, stem: str):
-    if stem not in STEMS + ("mix",):
+    if stem not in STEMS + ("mix",) and not _midi_part(sid, stem):
         raise HTTPException(400)
     p = library.song_dir(sid) / "peaks" / f"{stem}.bin"
     if not p.exists():
         raise HTTPException(404)
     return Response(p.read_bytes(), media_type="application/octet-stream",
-                    headers={"Cache-Control": "max-age=3600"})
+                    headers={"Cache-Control": "no-cache" if sid.startswith("midi_") else "max-age=3600"})
 
 
 _hi_lock = threading.Lock()
@@ -439,10 +541,11 @@ def peaks_hi(sid: str, stem: str):
     for (and again whenever the stem file is newer)."""
     from .audio_io import peaks16
     from .config import PEAKS_HI_PER_SEC
-    if stem not in STEMS + ("mix",):
+    if stem not in STEMS + ("mix",) and not _midi_part(sid, stem):
         raise HTTPException(400)
     d = library.song_dir(sid)
-    srcs = [d / "stems" / f"{s}.flac" for s in (STEMS if stem == "mix" else (stem,))]
+    mix = (library.read(sid) or {}).get("stems") or STEMS if sid.startswith("midi_") else STEMS
+    srcs = [d / "stems" / f"{s}.flac" for s in (mix if stem == "mix" else (stem,))]
     srcs = [f for f in srcs if f.exists()]
     if not srcs:
         raise HTTPException(404)
@@ -450,7 +553,7 @@ def peaks_hi(sid: str, stem: str):
     with _hi_lock:
         if not out.exists() or out.stat().st_mtime < max(f.stat().st_mtime for f in srcs):
             info = library.read(sid)
-            y = sum(library.read_stem(sid, f.stem, info) for f in srcs)
+            y = _stem_sum([library.read_stem(sid, f.stem, info) for f in srcs])
             out.parent.mkdir(exist_ok=True)
             tmp = out.with_suffix(".tmp")
             peaks16(y, SR, PEAKS_HI_PER_SEC).tofile(tmp)
@@ -565,11 +668,12 @@ async def audition(request: Request):
     info = library.read(sid)
     if not info:
         raise HTTPException(404)
-    stems = [s for s in b.get("stems", STEMS) if s in STEMS]
-    key = (sid, tuple(stems))
+    allowed = info.get("stems") if info.get("kind") == "midi" else STEMS      # a MIDI song's stems are its parts
+    stems = [s for s in b.get("stems", allowed) if s in allowed]
+    key = (sid, tuple(stems), info.get("stems_rev", 0))
     buf = _aud_cache.get(key)
     if buf is None:
-        buf = sum(library.load_stem(sid, s) for s in stems)
+        buf = _stem_sum([library.load_stem(sid, s) for s in stems])
         _aud_cache.clear()
         _aud_cache[key] = buf
     beats = info["beats"]
@@ -950,6 +1054,37 @@ async def mashup_build(request: Request):
     return {"project": proj, "desc": desc}
 
 
+@app.post("/api/mashup/grid")
+async def mashup_grid(request: Request):
+    """Pick stems (gridmash.py): any stems from any library songs, fitted to one master song - songs in another
+    time signature included. Body: {picks: [{song, stems: [...]}], master?: song id, fits?: {song id: "auto" |
+    "beat" | "bar"}, name?, opts?: {follow: "stretch" | "cut", turns: bool, grids: "fix" | "asis"}}. The result is a
+    normal editable project, one lane per (song, stem), plus what was done to each song (speed, key, how its bars
+    were fitted and kept in time, lines placed / left out, anything done about its beat grid)."""
+    b = await request.json()
+    picks = [dict(song=str(p["song"]), stems=[str(s) for s in p["stems"]]) for p in (b.get("picks") or [])
+             if isinstance(p, dict) and p.get("song") and p.get("stems")]
+    if not picks:
+        raise HTTPException(400, "tick at least one stem")
+    for p in picks:
+        info = library.read(p["song"])
+        if not info:
+            raise HTTPException(404, f"no such song {p['song']}")
+        if info.get("status") != "ready":
+            raise HTTPException(409, f"{info.get('title', p['song'])} isn't ready yet - wait for its import to finish")
+        if info.get("kind") in ("midi", "sample"):
+            raise HTTPException(400, f"{info.get('title', p['song'])} is a {info['kind']} - pick songs with stems")
+    try:
+        from . import gridmash
+        o = b.get("opts") if isinstance(b.get("opts"), dict) else {}
+        opts = dict(follow="cut" if o.get("follow") == "cut" else "stretch", turns=o.get("turns") is not False,
+                    grids="asis" if o.get("grids") == "asis" else "fix")
+        proj, desc = await asyncio.to_thread(gridmash.build, picks, b.get("master"), b.get("fits") or {}, b.get("name"), opts)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"project": proj, "desc": desc}
+
+
 @app.post("/api/mashup/auto")
 async def mashup_auto(request: Request):
     """Autonomous "2+ songs -> finished editable project" (design D). Body: {paths:[audio file paths] OR
@@ -1145,6 +1280,214 @@ def yue2_audio(rid: str, name: str):
     return FileResponse(p, media_type="audio/flac")
 
 
+# ---------------------------------------------------------------- ACE Studio Reimagine (/api/ace/*)
+
+@app.get("/api/ace/status")
+def ace_status():
+    from . import acelink
+    return acelink.status()
+
+
+@app.get("/api/ace/stt")
+def ace_stt_engines():
+    """Selectable vocal STT engines (Whisper VAD on/off, ACE free Vocal-to-MIDI V2, Parakeet-TDT ONNX)."""
+    from . import acelink, acereimagine
+    return dict(engines=acereimagine.stt_engines_info(), languages=list(acelink.ACE_V2M_LANGUAGES))
+
+
+@app.get("/api/ace/models")
+def ace_models(refresh: bool = False):
+    """Free Voice Changer models (33 voice + 14 instrument) + Add A Layer sound types + STT engines."""
+    from . import acelink, acereimagine
+    try:
+        models = acelink.voice_changer_models(force_live=bool(refresh))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    return dict(models=models, sound_types=list(acereimagine.LAYER_SOUND_TYPES),
+                keys=list(acereimagine.KEY_NAMES), scales=list(acereimagine.SCALE_NAMES),
+                stt_engines=acereimagine.stt_engines_info(), v2m_languages=list(acelink.ACE_V2M_LANGUAGES))
+
+
+@app.post("/api/ace/prepare")
+async def ace_prepare(request: Request):
+    """ACE Reimagine stage 1: snapshot open mix, bounce audio, transcribe lyrics (unless skipped), read heard traits."""
+    b = await request.json()
+    proj = b.get("project")
+    if not proj or not proj.get("clips"):
+        raise HTTPException(400, "open a mix first")
+    from . import acelink, acereimagine
+    prompt = str(b.get("prompt") or "")[:400]
+    skip_lyrics = bool(b.get("skip_lyrics"))
+    stt_engine = str(b.get("stt_engine") or "whisper_vad").strip().lower()
+    if stt_engine not in acereimagine.STT_ENGINES:
+        raise HTTPException(400, f"stt_engine must be one of {', '.join(acereimagine.STT_ENGINES)}")
+    stt_language = str(b.get("stt_language") or "english").strip().lower()
+    if stt_engine == "ace_v2m" and stt_language not in acelink.ACE_V2M_LANGUAGES:
+        raise HTTPException(400, f"stt_language must be one of {', '.join(acelink.ACE_V2M_LANGUAGES)}")
+
+    def work(job):
+        return acereimagine.prepare(proj, prompt, skip_lyrics=skip_lyrics,
+                                    stt_engine=stt_engine, stt_language=stt_language,
+                                    progress=job.sub(0, 1), cancelled=lambda: job.cancelled)
+
+    needs_gpu = (not skip_lyrics) and bool(acereimagine.STT_ENGINES[stt_engine].get("gpu"))
+    return jobs.submit("ace-prep", "ACE Reimagine: preparing mix", work, gpu=needs_gpu).to_dict()
+
+
+@app.post("/api/ace/transcribe")
+async def ace_transcribe(request: Request):
+    """Re-transcribe a prepared mix's vocal stem (or selected bar range) with any selectable STT engine (0 credits)."""
+    b = await request.json()
+    prep_id = str(b.get("prep_id") or "")
+    if not (DATA / "ace" / Path(prep_id).name / "prep.json").exists():
+        raise HTTPException(400, "prepare the mix for ACE Reimagine first")
+    from . import acelink, acereimagine
+    engine = str(b.get("engine") or "whisper_vad").strip().lower()
+    if engine not in acereimagine.STT_ENGINES:
+        raise HTTPException(400, f"engine must be one of {', '.join(acereimagine.STT_ENGINES)}")
+    language = str(b.get("language") or "english").strip().lower()
+    if engine == "ace_v2m" and language not in acelink.ACE_V2M_LANGUAGES:
+        raise HTTPException(400, f"language must be one of {', '.join(acelink.ACE_V2M_LANGUAGES)}")
+    start_bar = b.get("start_bar")
+    end_bar = b.get("end_bar")
+
+    def work(job):
+        return acereimagine.transcribe_prep(
+            prep_id, engine=engine, language=language, start_bar=start_bar, end_bar=end_bar,
+            progress=job.sub(0, 1), cancelled=lambda: job.cancelled,
+        )
+
+    needs_gpu = bool(acereimagine.STT_ENGINES[engine].get("gpu"))
+    lbl = acereimagine.STT_ENGINES[engine]["label"]
+    return jobs.submit("ace-stt", f"ACE Reimagine: transcribing ({lbl})", work, gpu=needs_gpu).to_dict()
+
+
+@app.post("/api/ace/perform")
+async def ace_perform(request: Request):
+    """ACE Reimagine stage 2: run ACE Studio in enhancer (AI Cover), layer (Add A Layer), or voice_swap (FREE) mode."""
+    b = await request.json()
+    prep_id = str(b.get("prep_id") or "")
+    if not (DATA / "ace" / Path(prep_id).name / "prep.json").exists():
+        raise HTTPException(400, "prepare the mix for ACE Reimagine first")
+    from . import acereimagine
+    mode = str(b.get("mode") or "enhancer")
+    if mode not in ("enhancer", "layer", "voice_swap"):
+        raise HTTPException(400, "mode must be enhancer, layer, or voice_swap")
+
+    style = str(b.get("style") or "")[:1600]
+    lyrics = b.get("lyrics")
+    lyrics_mode = str(b.get("lyrics_mode") or "mix")
+    influence = b.get("influence", 0.5)
+    try:
+        influence = float(influence)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "influence / drift must be a number between 0 and 1")
+    if not 0.0 <= influence <= 1.0:
+        raise HTTPException(400, "influence / drift must be between 0.0 and 1.0")
+
+    source_scope = str(b.get("source_scope") or "full")
+    mute_stems = [str(s) for s in (b.get("mute_stems") or []) if s]
+    start_bar = b.get("start_bar")
+    end_bar = b.get("end_bar")
+    sound_type = str(b.get("sound_type") or "instrumental")
+    instrument = str(b.get("instrument") or "")[:200]
+    model_ids = [int(x) for x in (b.get("model_ids") or []) if str(x).strip()]
+    if mode == "voice_swap" and not model_ids:
+        raise HTTPException(400, "pick at least one Voice Changer model")
+    semitones = int(b.get("semitones") or 0)
+    pitch_correction = int(b.get("pitch_correction") if b.get("pitch_correction") is not None else 20)
+    random_offset = int(b.get("random_offset") or 0)
+    correct_to_key = str(b.get("correct_to_key") or "")
+    correct_to_scale = str(b.get("correct_to_scale") or "Major")
+    remove_instrument = bool(b.get("remove_instrument"))
+    remove_reverb = bool(b.get("remove_reverb"))
+
+    def work(job):
+        return acereimagine.perform(
+            prep_id, mode=mode, style=style, lyrics=lyrics, lyrics_mode=lyrics_mode,
+            influence=influence, source_scope=source_scope, mute_stems=mute_stems,
+            start_bar=start_bar, end_bar=end_bar, sound_type=sound_type, instrument=instrument,
+            model_ids=model_ids, semitones=semitones, pitch_correction=pitch_correction,
+            random_offset=random_offset, correct_to_key=correct_to_key, correct_to_scale=correct_to_scale,
+            remove_instrument=remove_instrument, remove_reverb=remove_reverb,
+            progress=job.sub(0, 1), cancelled=lambda: job.cancelled,
+        )
+
+    return jobs.submit("ace-perform", f"ACE Reimagine: {acereimagine.MODES[mode]}", work, gpu=False).to_dict()
+
+
+@app.post("/api/ace/reuse")
+async def ace_reuse(request: Request):
+    """Fetch a previously generated ACE cloud result (0 credits) into Re-Tex for audition and stem alignment."""
+    b = await request.json()
+    result_id = str(b.get("result_id") or "").strip()
+    if not result_id:
+        raise HTTPException(400, "result_id is required")
+    title = str(b.get("title") or "")[:120]
+    kit = str(b.get("kit") or "music-enhancer")
+    prep_id = str(b.get("prep_id") or "") or None
+    bpm = float(b.get("bpm") or 120.0)
+
+    def work(job):
+        from . import acereimagine
+        return acereimagine.import_cloud_take(
+            result_id, title=title, kit=kit, prep_id=prep_id, bpm=bpm,
+            progress=job.sub(0, 1), cancelled=lambda: job.cancelled,
+        )
+
+    return jobs.submit("ace-perform", f"ACE Reimagine: fetching cloud take", work, gpu=False).to_dict()
+
+
+@app.get("/api/ace/prep/{prep_id}")
+def ace_prep(prep_id: str):
+    from . import acereimagine
+    try:
+        return acereimagine._prep(prep_id)
+    except (OSError, ValueError):
+        raise HTTPException(404, "that ACE preparation is gone")
+
+
+@app.get("/api/ace/renders")
+def ace_renders():
+    from . import acereimagine
+    return acereimagine.renders()
+
+
+@app.get("/api/ace/history")
+def ace_history(kit: str = "all", refresh: bool = False):
+    from . import acelink
+    try:
+        return dict(items=acelink.cloud_history(kit=kit, max_pages=3, refresh=bool(refresh)))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/ace/audio/{rid}/{name}")
+def ace_audio(rid: str, name: str):
+    p = DATA / "ace" / Path(rid).name / Path(name).name
+    if p.suffix.lower() not in (".flac", ".wav", ".mp3") or not p.exists():
+        raise HTTPException(404)
+    mtypes = {".flac": "audio/flac", ".wav": "audio/wav", ".mp3": "audio/mpeg"}
+    return FileResponse(p, media_type=mtypes[p.suffix.lower()])
+
+
+@app.post("/api/ace/save")
+async def ace_save(request: Request):
+    """Import chosen ACE takes as library songs (single-stem or full Blend separation), align, lock, and drop in."""
+    b = await request.json()
+    from . import acereimagine
+    try:
+        out = acereimagine.save(
+            str(b.get("render_id") or ""), [int(n) for n in (b.get("takes") or [])],
+            add_to=b.get("add_to") or None,
+            drop_mode=str(b.get("drop_mode") or ("vocals" if b.get("vocals_only") else "all")),
+            retime=bool(b.get("retime")),
+        )
+    except (OSError, StopIteration, ValueError) as e:
+        raise HTTPException(400, f"can't save those ACE takes ({e})")
+    return [dict(id=sid, job=job.id, align_job=aj.id) for sid, job, aj in out]
+
+
 # ---------------------------------------------------------------- beat grid window (web/grid.html)
 # The song as recorded with a metronome on its marks, both through the page's own audio - so monitoring latency
 # can't pull them apart - for lining the marks up by ear. Saves through PUT /api/songs/{sid}/marks.
@@ -1157,15 +1500,114 @@ def grid_page():
 
 @app.post("/api/songs/{sid}/grid/repair")
 def grid_repair(sid: str):
-    """The detector's beats re-counted on one pulse (beatfix.py) - a proposal for the beat grid window to play and
-    save; nothing is written here. -> {marks: {t, d, s, bpb}, report}"""
-    from . import beatfix
+    """The detector's beats put right (lock.repaired: re-counted on one pulse, or stretch by stretch against its
+    neighbour - whichever leaves the steadier grid) - a proposal for the beat grid window to play and save; nothing
+    is written here. -> {marks: {t, d, s, bpb}, report}"""
+    from . import lock
     info = library.read(sid)
     if not info or not info.get("beats"):
         raise HTTPException(404, "no such song")
     drums = library.read_stem(sid, "drums").mean(0)
-    marks, rep = beatfix.as_marks(info, drums)
+    marks, rep = lock.repaired(info, drums)
     return {"marks": marks, "report": rep}
+
+
+@app.post("/api/songs/{sid}/grid/verify")
+async def grid_verify(sid: str):
+    """Zero-phase full-band transient-verified grid proposal for the beat grid window (writes nothing).
+    Fixes 2x/0.5x slips and glitch beats, aligns k=1 phase to real kick+snare hits via Viterbi DP, locks steady
+    songs straight, evens drumless breaks, picks kick-verified downbeats. -> {marks, report}."""
+    from . import lock
+    info = library.read(sid)
+    if not info or not info.get("beats"):
+        raise HTTPException(404, "no such song")
+    marks, rep = await asyncio.to_thread(lock.verify_grid, sid)
+    return {"marks": marks, "report": rep}
+
+
+@app.post("/api/songs/{sid}/grid/audit")
+async def grid_audit(sid: str, request: Request):
+    """Audit a beat list (body {t: [...]} or {marks: {t: [...]}}; omit to audit the song's active grid) against
+    the song's real zero-phase kick+snare drum hits."""
+    from . import gridaudit
+    info = library.read(sid)
+    if not info or not info.get("beats"):
+        raise HTTPException(404, "no such song")
+    b = await request.json() if (await request.body()) else {}
+    marks_t = b.get("t") or ((b.get("marks") or {}).get("t") if isinstance(b.get("marks"), dict) else None)
+    return await asyncio.to_thread(gridaudit.audit_song_marks, sid, marks_t)
+
+
+# ---------------------------------------------------------------- TempoMap, the sidecar (tempomap_side.py)
+# A separate program finds the song's grid structure (tempo sections, bars of any length) in its own process; the
+# Beat grid window takes its marks as a proposal (like Repair), and its own page opens in a pop-out from the song
+# tools menu. Nothing is written to the library here - saving is the Beat grid window's own Save.
+
+@app.post("/api/songs/{sid}/tempomap")
+def tempomap_marks(sid: str, fresh: bool = False):
+    """The song's tempo map as beat marks - a proposal for the beat grid window. Makes the map first if there isn't
+    a current one (20-60 s). -> {marks: {t, d, s, bpb}, report}"""
+    from . import tempomap_side as T
+    try:
+        r = T.run(sid, audio=False, force=fresh)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not r["ok"]:
+        raise HTTPException(500, "TempoMap couldn't map the song: " + (r["log"].splitlines() or ["?"])[-1])
+    mk, rep = T.marks(sid)
+    return {"marks": mk, "report": rep}
+
+
+@app.post("/api/songs/{sid}/tempomap/page")
+def tempomap_make_page(sid: str, fresh: bool = False):
+    """Make the sidecar page (the map with its click tracks) if it isn't current. -> {ok, url}"""
+    from . import tempomap_side as T
+    try:
+        r = T.run(sid, audio=True, force=fresh)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not r["ok"]:
+        raise HTTPException(500, "TempoMap couldn't map the song: " + (r["log"].splitlines() or ["?"])[-1])
+    return {"ok": True, "url": f"/tempomap/files/{sid}/report.html"}
+
+
+@app.get("/tempomap")
+def tempomap_page(sid: str, pid: str = ""):
+    """The sidecar's pop-out: straight to the song's map page when it's current, else a page that has it made."""
+    from . import tempomap_side as T
+    try:
+        T.check_sid(sid)
+    except ValueError as e:
+        return Response(f"<p style='font:14px sans-serif;color:#ddd;background:#121212;padding:20px'>{e}</p>",
+                        media_type="text/html")
+    q = f"?pid={pid}" if pid and T.SID_OK.match(pid) else ""
+    if T.is_fresh(sid, need_audio=True):
+        return Response(status_code=302, headers={"Location": f"/tempomap/files/{sid}/report.html{q}"})
+    title = (library.read(sid) or {}).get("title") or sid
+    html = """<!doctype html><meta charset="utf-8"><title>Tempo map - Re-Tex</title>
+<body style="margin:0;background:#121212;color:#e8e8e8;font:14px 'Segoe UI',sans-serif;display:grid;place-items:center;height:100vh">
+<div style="text-align:center"><div style="font-size:18px;margin-bottom:8px">Mapping <b id=t></b></div>
+<div id=m style="color:#9aa39d">Finding its tempo sections, beats and bars (about 20-60 s; a long song a little more)...</div></div>
+<script>
+document.getElementById("t").textContent = %s;
+fetch("/api/songs/%s/tempomap/page", {method: "POST"}).then(async (r) => {
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  location.replace(j.url + %s);
+}).catch((e) => { document.getElementById("m").textContent = "Couldn't make the map: " + e.message; });
+</script>""" % (json.dumps(title), sid, json.dumps(q))
+    return Response(html, media_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/tempomap/files/{sid}/{name}")
+def tempomap_file(sid: str, name: str):
+    """The files of a song's map (its page, map, marks and click tracks) - only what TempoMap writes."""
+    from . import tempomap_side as T
+    p = T.file_path(sid, name)
+    if not p:
+        raise HTTPException(404)
+    kind = {"html": "text/html", "json": "application/json", "mp3": "audio/mpeg"}[name.rsplit(".", 1)[1]]
+    return FileResponse(p, media_type=kind, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/songs/{sid}/source")
@@ -1400,7 +1842,7 @@ def _folder_info(p):
     if p is None:
         return {"ok": False, "error": "empty"}
     if not p.is_absolute():
-        return {"ok": False, "error": "use a full path, like D:\\Music\\My Library"}
+        return {"ok": False, "error": "use a full path, like F:\\Music\\Mashup Library"}
     if p.exists() and not p.is_dir():
         return {"ok": False, "error": "that's a file, not a folder"}
     out = {"ok": True, "path": str(p), "exists": p.exists(), "songs": 0, "projects": 0}
@@ -1547,6 +1989,13 @@ _readhead.register(app)
 # Perform mode: chops / samples played live from the keyboard, then written as clips (mashlab/perform_live.py)
 from . import perform_live as _perform_live  # noqa: E402
 _perform_live.register(app, player)
+# MIDI songs (parts as stems, played by SF2 / VST3 / sampler instruments) and the piano roll (mashlab/midi*.py)
+from . import midi_api as _midi_api  # noqa: E402
+_midi_api.register(app, player)
+from . import glitch as _glitch  # noqa: E402
+_glitch.register(app)
+from . import midi_remix as _midi_remix  # noqa: E402
+_midi_remix.register(app)
 
 
 @app.post("/api/shutdown")

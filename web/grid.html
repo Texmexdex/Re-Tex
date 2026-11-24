@@ -36,6 +36,7 @@
 
   <div class="se-wave"><canvas id="gCanvas"></canvas></div>
   <div id="gHint" class="se-selbar dim">Play it and listen to the clicks against the drums. A bar's beats stay evenly spread between its bar lines, and nothing before the mark you drag moves.
+    <b>Drag along the ruler</b>: loop that stretch · <b>L</b>: loop this bar · <b>1</b>: tap on the 1 you hear (or click a beat, then 1) - the bars re-count from there.
     <b>Drag</b> a bar line: the bar before it squeezes or stretches, everything after moves with it · <b>Ctrl+drag</b> a bar line: only the bars either side change · <b>drag</b> a beat: its bar's tempo, the rest moves along · <b>Ctrl+drag</b> a beat: only that beat · <b>Shift+drag</b>: everything · click a mark + <b>Del</b>: delete it (the bar re-spreads, 4 beats to 3) · <b>double-click</b> a mark: bar's 1 / plain beat · double-click elsewhere: add a beat.</div>
 
   <div class="se-tools">
@@ -56,17 +57,44 @@
         <button class="small" data-one="1" title="The bar starts one beat later from the playhead on">1 a beat later</button>
       </div>
     </section>
+    <section><h4>Loop and bar 1</h4>
+      <div class="se-row">
+        <button id="gLoopBar" class="small" title="Loop the bar under the playhead (L). Or drag along the ruler above the song to loop any stretch - it snaps to the beats.">Loop this bar</button>
+        <button id="gLoop2" class="small" title="Loop this bar and the next">Loop 2 bars</button>
+        <button id="gLoopOff" class="small" disabled title="Play straight through again (L, or click the ruler)">Loop off</button>
+        <span id="gLoopMsg" class="dim"></span>
+      </div>
+      <div class="se-row">
+        <button id="gOne" class="small primary" title="Make the selected beat - or, while it plays, the beat you hear now - a bar's 1, and re-count the bars from there on (key 1: tap it on the 1 you hear while it plays). The marks don't move; nothing needs to be exact - it snaps to the nearest beat.">This beat is a 1 (from here on)</button>
+        <button id="gOneAll" class="small" title="The same, re-counting the bars over the whole song (Shift+1)">… over the whole song</button>
+      </div>
+    </section>
     <section><h4>Bars</h4>
       <div class="se-row">
         <button id="gEven" class="small" title="Spread the beats of every uneven bar evenly between its two bar lines (bars where you placed a beat yourself are left as they are). Ctrl+Z undoes.">Even out uneven bars</button>
         <button id="gNextUneven" class="small" title="Jump to the next bar whose beats aren't evenly spread">Next uneven bar</button>
         <span id="gUneven" class="dim"></span>
       </div>
-    </section>
-    <section><h4>Repair</h4>
       <div class="se-row">
-        <button id="gRepair" class="small primary" title="Rebuild the grid from the detector's beats on one steady pulse: where it counted half or double time, re-counted; each beat put on its drum hit. Stretches the drums can't confirm show amber. Undo brings back what you had.">Repair from the detector</button>
+        <button id="gCount" class="small" title="Every bar the song's beats-a-bar long, counted from where most of its bars already start (the bars that come out short or long are what shift its 1s off a project's bar lines). Only the bar lines change - no beat moves, a lock stays. Ctrl+Z undoes.">Count every bar evenly</button>
+        <button id="gNextOdd" class="small" title="Jump to the next bar that isn't the song's beats-a-bar long">Next odd bar</button>
+        <span id="gOdd" class="dim"></span>
+      </div>
+    </section>
+    <section><h4>Verify &amp; repair</h4>
+      <div class="se-row">
+        <button id="gVerify" class="small primary" title="Align the grid to real zero-phase kick + snare drum hits (30-160 Hz + 250-3500 Hz, k=1 Viterbi tracking, fixes 2x/0.5x glitches, locks steady songs straight). Undo brings back what you had.">Verify &amp; fix to drum hits</button>
+        <button id="gAudit" class="small" title="Measure how close the current marks sit to the real drum hits (zero-phase kick + snare)">Audit vs drums</button>
+        <span id="gAuditMsg" class="dim"></span>
+      </div>
+      <div class="se-row">
+        <button id="gRepair" class="small" title="Rebuild the grid from the detector's beats on one steady pulse: where it counted half or double time, re-counted; each beat put on its drum hit. Stretches the drums can't confirm show amber. Undo brings back what you had.">Repair from the detector</button>
         <span id="gRepairMsg" class="dim"></span>
+      </div>
+      <div class="se-row">
+        <button id="gTempo" class="small primary" title="The grid from TempoMap (a separate program): tempo sections - steady, or following a take that drifts - and bars of any length, found from the stems and Beat This!'s downbeats. Loaded here as a proposal: listen, fix, then Save. Undo brings back what you had. Bar lines that fall between two beats (every other one in 7/8) can't be marks - those show as one longer bar.">Tempo map</button>
+        <button id="gTempoOpen" class="small" title="The tempo map's own page: tempo sections, bars, and click tracks to compare against the song">Open the map…</button>
+        <span id="gTempoMsg" class="dim"></span>
       </div>
     </section>
     <section><h4>4-bar phrases (the high clicks)</h4>

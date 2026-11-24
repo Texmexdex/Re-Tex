@@ -1,5 +1,5 @@
-// ReadHead engine — "Flow" arrangement: the author's own way of arranging a vocal in Re-Tex,
-// learned from one of his hand-made projects (62 hand-placed clips), not invented.
+// ReadHead engine — "Flow" arrangement: Drew's own way of arranging a vocal in Re-Tex,
+// learned from his "all you need to know" project (62 hand-placed clips), not invented.
 //
 // What his arrangement does, and what this reproduces:
 //   - the vocal mostly READS FORWARD through the song (a cursor), keeping its own bar phase

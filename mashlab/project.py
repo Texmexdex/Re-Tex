@@ -91,6 +91,11 @@ def song_semis(project, sid, stem):
     if _is_sample(sid):
         return round(float((project["songs"].get(sid) or {}).get("transpose", 0.0)), 3)
     screw = screw_semis(project)
+    if str(sid).startswith("midi_"):        # a MIDI part: every part but drums takes the transpose (exact, by note)
+        drums = (library.read(sid) or {}).get("drum_stems") or []
+        if stem in drums:
+            return round(screw, 3)
+        return round(float((project["songs"].get(sid) or {}).get("transpose", 0.0)) + screw, 3)
     if stem not in PITCHED:
         return round(screw, 3)
     s = project["songs"].get(sid, {})

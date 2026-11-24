@@ -34,7 +34,7 @@
       </div>
       <button id="btnMashup" class="primary" title="Pick songs, get ready-made mashups">Auto-Mashup</button>
       <button id="btnDj" class="primary" title="Two songs + what you want: a language model plans the mix like a DJ, the engine plays it in time">DJ Mix</button>
-      <button id="btnReimagine" class="primary" title="YuE2 re-sings and re-instruments the open mix as one new production; keep the takes you like as songs with stems">Reimagine</button>
+      <button id="btnReimagine" class="primary" title="Reimagine the open mix with YuE2 Studio or ACE Studio: genre &amp; instrument swaps, adherence/drift control, free voice swaps, and bar-aligned stems">Reimagine</button>
       <button id="btnProjects" title="Open / new project">Projects</button>
       <button id="btnSave" title="Save (Ctrl+S)">Save</button>
       <button id="btnBranch" title="Keep this project exactly as it is now and carry on in a copy of it (a branch)">Branch</button>
@@ -47,7 +47,7 @@
   <aside id="library">
     <div class="lib-head">
       <h2>Your Library <span id="libCount" class="lib-count"></span></h2>
-      <div class="row-gap"><button id="btnFolder" class="small" title="New folder (Ctrl/Shift+click songs first to put them straight in it)">+ Folder</button><button id="btnAdd" class="small primary" title="Add songs (or drop audio files anywhere)">+ Add</button></div>
+      <div class="row-gap"><button id="btnFolder" class="small" title="New folder (Ctrl/Shift+click songs first to put them straight in it)">+ Folder</button><button id="btnNewMidi" class="small" title="An empty MIDI song to draw notes in (or drop .mid files anywhere)">+ MIDI</button><button id="btnAdd" class="small primary" title="Add songs (or drop audio files anywhere)">+ Add</button></div>
     </div>
     <div id="libChips" class="chips" title="Group the library by"></div>
     <input id="libSearch" class="search" placeholder="Search songs…" spellcheck="false">
@@ -104,7 +104,7 @@
 <div id="modalRoot"></div>
 <div id="ctxMenu" hidden></div>
 <div id="toast" hidden></div>
-<input id="fileInput" type="file" accept="audio/*,video/*,.flac,.wav,.mp3,.m4a,.ogg,.opus,.aiff" multiple hidden>
+<input id="fileInput" type="file" accept="audio/*,video/*,.flac,.wav,.mp3,.m4a,.ogg,.opus,.aiff,.mid,.midi" multiple hidden>
 
 <script type="module" src="/static/js/main.js"></script>
 </body>

@@ -8,7 +8,7 @@ from mashlab.player import CLICKS, Player
 
 def test_clicks_land_on_the_grid_with_accents_and_dont_depend_on_block_size():
     p = Player()
-    p._spb, p._bpb, p.click_gain = 60.0 / 130.0 * SR, 4, 1.0        # 130 BPM, 4/4 (the reference mix)
+    p._spb, p._bpb, p.click_gain = 60.0 / 130.0 * SR, 4, 1.0        # 130 BPM, 4/4 (Time in Parole)
     n = int(18 * p._spb)                                             # 4.5 bars
     whole = np.zeros((2, n), np.float32)
     p._add_clicks(whole, 0, 0, n)

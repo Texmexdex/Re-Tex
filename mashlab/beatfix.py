@@ -9,7 +9,7 @@ repair(beats, drums) -> beats on one pulse:
   3. re-count each stretch at that pulse when it's a simple multiple of it: x2 / x1/2 (the classic detector octave
      error) always; x3/2, x2/3, x3, x1/3 only where the drum hits confirm it (the new beats land on hits at least as
      well) - else the stretch stays as it is and is reported as unsure; a genuine tempo change (any other ratio) stays,
-  4. smooth the tempo curve and put each beat on the drum hit within 25 ms of it (a hand-fixed grid
+  4. smooth the tempo curve and put each beat on the drum hit within 25 ms of it (the user's Between the Trees grid
      was made this way and locked without an audible artifact).
 """
 import numpy as np
@@ -86,10 +86,12 @@ def _recount(b, segs):
     return np.interp(q, pos, b)
 
 
-def _hit_env(drums, sr, hop=128):
-    import librosa
-    env = librosa.onset.onset_strength(y=np.asarray(drums, np.float32), sr=sr, hop_length=hop)
-    return env / (np.percentile(env, 99) + 1e-9), hop
+def _hit_env(drums, sr, hop=None):
+    from . import gridaudit
+    body, _, _, _, _ = gridaudit.onset_curves(drums, sr=sr)
+    hop = max(1, int(round(sr / gridaudit.ENV_FPS)))
+    p99 = float(np.percentile(body, 99)) if len(body) else 0.0
+    return body / (p99 + 1e-9), hop
 
 
 def _hits(env, hop, sr, times):

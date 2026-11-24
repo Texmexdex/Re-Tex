@@ -47,6 +47,35 @@ def _replace_stale(port):
     return False
 
 
+PIP_NAMES = {"multipart": "python-multipart", "python_multipart": "python-multipart", "yaml": "pyyaml",
+             "sklearn": "scikit-learn", "cv2": "opencv-python", "soundfile": "soundfile", "beat_this":
+             "git+https://github.com/CPJKU/beat_this", "muscriptor": "git+https://github.com/muscriptor/muscriptor.git"}
+
+
+def _cant_start(e):
+    """No quiet fallbacks, also at startup: name what's missing, the real error, and the exact fix."""
+    import sys
+    mod = (getattr(e, "name", None) or "").split(".")[0]
+    print("\n  Re-Tex can't start.", flush=True)
+    if isinstance(e, ModuleNotFoundError) and mod:
+        pip = PIP_NAMES.get(mod, mod.replace("_", "-"))
+        print(f"  The Python library '{mod}' isn't installed in Re-Tex's Python:\n    {sys.executable}", flush=True)
+        if mod in ("torch", "torchaudio"):
+            print("  Fix (the CUDA build - plain 'pip install torch' is CPU-only on Windows):\n"
+                  f'    "{sys.executable}" -m pip install torch==2.8.0 torchaudio==2.8.0 '
+                  "--index-url https://download.pytorch.org/whl/cu128", flush=True)
+        else:
+            print(f'  Fix:\n    "{sys.executable}" -m pip install {pip}', flush=True)
+        print("  Everything Re-Tex needs to start is listed in requirements.txt:\n"
+              f'    "{sys.executable}" -m pip install -r requirements.txt', flush=True)
+    else:
+        print(f"  A library failed to load: {type(e).__name__}: {e}\n"
+              "  Reinstalling that library usually fixes it (a DLL error with torch: the CUDA build, see "
+              "https://pytorch.org/get-started/locally/).", flush=True)
+    print(f"\n  The error was: {type(e).__name__}: {e}\n", flush=True)
+    sys.exit(2)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Re-Tex")
     ap.add_argument("--port", type=int, default=8765)
@@ -54,8 +83,11 @@ def main():
     a = ap.parse_args()
     if _replace_stale(a.port):
         print("  (closed an older copy that was still running in the background)", flush=True)
-    import uvicorn
-    from mashlab.server import app
+    try:
+        import uvicorn
+        from mashlab.server import app
+    except ImportError as e:                 # a library Re-Tex needs to start is gone: say which, and the fix
+        _cant_start(e)
     port = _free_port(a.port)
     url = f"http://127.0.0.1:{port}/"
     print(f"\n  Re-Tex running at {url}\n  (close this window to quit)\n", flush=True)

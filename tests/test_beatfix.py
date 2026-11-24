@@ -95,10 +95,11 @@ def test_lock_check_offers_repair_only_where_it_fixes_the_detectors_marks(monkey
     c = lock.check("hd")
     assert c["slips"] and not c["yours"] and c["repair_clears"] and c["left"] == []
     made = []
-    monkeypatch.setattr(lock, "make", lambda sid, check=True: made.append((sid, check)) or {"id": 1})
-    lock.repair_and_make("hd")                              # the repaired marks are kept, then the lock runs
+    monkeypatch.setattr(lock, "make", lambda sid, check=True, kind="marks": made.append((sid, check, kind)) or {"id": 1})
+    lock.repair_and_make("hd")                              # the repaired marks are kept, then the lock runs - smoothly
     m = library.read("hd")["user_marks"]
-    assert made == [("hd", True)] and len(m["t"]) == 160 and beatfix.slips(np.array(m["t"])) == []
+    assert made == [("hd", True, "smooth")] and len(m["t"]) == 160 and beatfix.slips(np.array(m["t"])) == []
+    assert c["repair"]["method"] == "recount" and c["repair"]["sec20"] == 0.0 and c["smooth"]["slips"]
     # marks the user made are never replaced from the lock
     _half_double_song(data_sandbox, monkeypatch, user_marks=dict(t=list(det), d=[0] * len(det), s=[1] * len(det)))
     c = lock.check("hd")

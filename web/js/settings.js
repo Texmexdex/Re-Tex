@@ -4,6 +4,7 @@
 import { api } from "./api.js";
 import { toast } from "./state.js";
 import { modal, showMenu } from "./ui.js";
+import { openComponents } from "./components.js";
 
 // ---------------------------------------------------------------- audio output
 async function switchOutput(name) {
@@ -54,6 +55,13 @@ export async function openSettings() {
         <button id="setOutScan" class="small" title="Look for devices connected or switched since Re-Tex started">Refresh</button></div>
       <div id="setOutInfo" class="set-info">Switches right away - playback carries on. Also on the speaker icon next to the volume.</div>
     </div>
+    <div class="set-sec">Components</div>
+    <div class="set-row">
+      <div class="set-field"><button id="setComp" class="small">Check what Re-Tex needs…</button></div>
+      <div class="set-info">Models, libraries and programs from outside Re-Tex: where each one is, what's missing,
+        and a Download button for the missing ones. Re-Tex never swaps one in quietly - a missing piece stops and
+        says so.</div>
+    </div>
     <div class="set-sec">Library</div>
     <p class="lead">Where your songs live. The library folder holds songs, stems, projects, uploads and YuE2 takes -
       it keeps growing as you add and delete songs. Point it at another folder for a separate library (a new empty
@@ -79,6 +87,7 @@ export async function openSettings() {
       Program: <code>${esc(cur.code)}</code><br>Models: <code>${esc(cur.models)}</code><br>
       Settings file: <code>${esc(cur.settings_file)}</code></div></details>`, { onClose: () => (m = null) });
   const B = m.body;
+  B.querySelector("#setComp").onclick = () => { m.close(); openComponents(); };
   const sel = B.querySelector("#setOut"), outInfo = B.querySelector("#setOutInfo");
   const fillOutputs = (r) => {
     sel.innerHTML = `<option value="">System default${!r.current && r.active ? " (" + esc(r.active) + ")" : ""}</option>` +

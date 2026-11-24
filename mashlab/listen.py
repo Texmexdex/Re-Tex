@@ -102,7 +102,8 @@ def describe(ids, progress=lambda f, m="": None, cancelled=lambda: False):
     from . import libmeta
     ok, why = available()
     if not ok:
-        raise RuntimeError(f"Listening isn't available: {why}")
+        from . import components
+        raise components.Missing("flamingo", why)
     c = cfg()
     ids = [s for s in ids if (library.read(s) or {}).get("status") == "ready"]
     if not ids:

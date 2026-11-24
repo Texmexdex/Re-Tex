@@ -7,8 +7,16 @@ async function req(method, url, body) {
   }
   const r = await fetch(url, opt);
   if (!r.ok) {
-    let msg = r.statusText;
-    try { const j = await r.json(); msg = j.detail || msg; } catch {}
+    let msg = r.statusText, missing = null;
+    try { const j = await r.json(); msg = j.detail || msg; missing = j.missing || null; } catch {}
+    // a model / library / program that isn't there (mashlab/components.py): the page offers the fix (components.js)
+    const mk = typeof msg === "string" ? msg.match(/\[component:([a-z0-9_]+)\]/) : null;
+    if (mk) msg = msg.replace(mk[0], "").trim();
+    if (missing) window.dispatchEvent(new CustomEvent("retex-missing", { detail: missing }));
+    else if (mk) fetch("/api/components").then((x) => x.json()).then((c) => {
+      const info = c.items.find((i) => i.key === mk[1]);
+      if (info) window.dispatchEvent(new CustomEvent("retex-missing", { detail: info }));
+    }).catch(() => {});
     throw new Error(msg);
   }
   const ct = r.headers.get("content-type") || "";

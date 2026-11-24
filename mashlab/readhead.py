@@ -5,14 +5,14 @@ Two modes, both run on the PROJECT's grid (its tempo, bar 1 = beat 0):
   arrange  the vocal song on a lane is re-arranged against the rest of the project: it reads
            forward through the vocal with loops, alternations, stammers, ratchets and hook loops,
            keeping the singer's own bar phase and cutting only between syllables ("Flow", learned
-           from the author's own hand-made edit), or places whole lines per section ("Lines")
+           from Drew's own "all you need to know" edit), or places whole lines per section ("Lines")
   glitch   the lane's current audio is chopped in place: stutters, rolls, repeats, skips, gates,
            displacements, phrase-aware, every phrase back in sync
 
 The heavy lifting is ReadHead's tested JS engine (readhead_js/, run with Node). This module only
 builds its inputs from the warped renders Re-Tex already made, and turns the edit it returns back
-into clips. It reads the library; it writes nothing there (inputs + feature caches go to the temp
-folder). The frontend (web/js/readhead.js) shows the result and applies it as one undo step.
+into clips. It reads the library; it writes nothing there (inputs + feature caches go to data/readhead/,
+rebuilt when missing). The frontend (web/js/readhead.js) shows the result and applies it as one undo step.
 """
 import asyncio
 import hashlib
@@ -20,16 +20,16 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import numpy as np
 
 from . import library, project as P, timing, variant, warp
-from .config import SR
+from .config import DATA, SR
 
 JS_DIR = Path(__file__).with_name("readhead_js")
-TMP = Path(tempfile.gettempdir()) / "retex_readhead"
+TMP = DATA / "readhead"         # its inputs + feature caches (named by content, rebuilt when missing): in the library
+                                # folder, not C:'s temp - everything Re-Tex uses lives under its own folder (Nov 16)
 ANALYSIS_SR = SR // 2           # the backing only feeds structure/energy analysis: half rate is plenty
 
 
@@ -133,7 +133,8 @@ def run(project, track_id, mode="arrange", opts=None, rng=None):
     opts = dict(opts or {})
     node = node_exe()
     if not node:
-        raise RuntimeError("ReadHead needs Node.js (https://nodejs.org) - it wasn't found on this PC")
+        from . import components
+        raise components.Missing("node")
     bpm, bpb = float(project["bpm"]), int(project.get("bpb", 4))
     T = SR * 60.0 / bpm                                       # samples per project beat
     clips = [c for c in project.get("clips", []) if not c.get("mute")]

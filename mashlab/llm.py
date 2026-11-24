@@ -44,9 +44,11 @@ def client(planner=None):
         from .backends import find_gguf
         p = find_gguf()
         path = str(p) if p else None
-    if not path or not os.path.exists(path):
-        raise LlmError("no language model: put a GGUF instruction model in data/models, or point data/config.json "
-                       "\"dj\" at an OpenAI-compatible server (e.g. LM Studio's)")
+    if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
+        from . import components
+        raise components.Missing("gguf", "no GGUF model in data/models" if not path else
+                                 f"{path} isn't there" if not os.path.exists(path) else
+                                 f"{os.path.basename(path)} is an empty file (0 bytes) - its download never finished")
     return LocalLlm(path)
 
 

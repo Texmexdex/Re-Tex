@@ -6,9 +6,16 @@ _model = None
 _lock = threading.Lock()
 
 
+def _device():
+    from . import components
+    return components.device("Separation")      # 'cpu' only with a loud notice
+
+
 def _get_model():
     global _model
     if _model is None:
+        from . import components
+        components.require("demucs")            # never a silent multi-hundred-MB download, never a cryptic offline error
         from demucs.pretrained import get_model
         _model = get_model("htdemucs_ft")
         _model.eval()
@@ -39,7 +46,7 @@ def separate(y, quality="best", progress=lambda f: None):
     import demucs.apply as dapply
 
     shifts, overlap = (4, 0.5) if quality == "best" else (1, 0.25)
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = _device()
     with _lock:
         model = _get_model()
         n_models = len(getattr(model, "models", [model]))
@@ -130,7 +137,7 @@ def _get_roformer():
         model = BSRoformer(**{k: m[k] for k in keys if k in m})
         sd = torch.load(ck, map_location="cpu", weights_only=False)
         model.load_state_dict(sd.get("state_dict", sd), strict=True)
-        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        dev = _device()
         _rof = (model.to(dev).eval(), dev, int(cfg["audio"]["chunk_size"]), int(cfg["inference"].get("num_overlap", 4)))
     return _rof
 
@@ -230,7 +237,7 @@ def _get_sw():
         model = BSRoformer(**{k: m[k] for k in keys if k in m})
         sd = torch.load(ck, map_location="cpu", weights_only=True)    # plain weights only (no code in the file runs)
         model.load_state_dict(sd.get("state_dict", sd), strict=True)
-        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        dev = _device()
         _sw = (model.to(dev).eval(), dev, int(cfg["audio"]["chunk_size"]), list(cfg["training"]["instruments"]))
     return _sw
 

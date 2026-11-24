@@ -2,12 +2,13 @@
 // Song view: Ctrl+wheel zooms, wheel scrolls, scrollbar at the bottom; drag on the bar ruler (or Shift+drag
 // anywhere) to select any bar range, which then behaves like a section (click = hear it, drag = place it).
 import { api, peaks } from "./api.js";
-import { S, on, emit, edit, fullSong, STEMS, STEM_COLORS, songMult, toast, invalidateSong, syncNow, editSongMarks, projectInfo } from "./state.js";
+import { S, on, emit, edit, fullSong, STEMS, STEM_COLORS, songMult, toast, invalidateSong, syncNow, editSongMarks, projectInfo, stemsOf, stemLabel, stemColor } from "./state.js";
+import { midiSongBar } from "./midi.js";
 import { dragOver, dropPayload, dropAtPlayhead, redraw as redrawTimeline } from "./timeline.js";
 import { landing, tempoVariation, tempoParts, detectedMarks, barStart, lockActive, lockView } from "./timing.js";
 import { showMenu, modal } from "./ui.js";
 import { openSampleEditor } from "./sampleopen.js";
-import { songToolItems, openGrid } from "./songtools.js";
+import { songToolItems, openGrid, openTempoMap } from "./songtools.js";
 
 // "varies ±x %" only when the song's own tempo really moves (> ±1 % over 16-beat stretches - the beat
 // detector's jitter averages out); "+ other tempos" when the detector found parts at another tempo
@@ -68,7 +69,9 @@ export async function openSong(id) {
   meterHint(song);
   heardLine();
   draw();
-  await Promise.all(STEMS.map(async (st) => { pk[st] = await peaks(id, st); draw(); }));
+  wholeButtons();
+  midiSongBar(song);
+  await Promise.all(stemsOf(song).map(async (st) => { pk[st] = await peaks(id, st); draw(); }));
 }
 // what Music Flamingo heard in the song (library → right-click → Listen and describe)
 function heardLine() {
@@ -150,7 +153,7 @@ const active = (sec, st) => (sec?.stems?.[st] ?? 1) > 0.05;
 // the whole song, one clip per section: one stem, or every stem ("all") - each only where it plays
 function wholeSong(stem) {
   return piecesFor(secs().map((s) => ({ a: s.start, b: s.end, name: secName(s),
-    stems: (stem === "all" ? STEMS : [stem]).filter((st) => active(s, st)) })));
+    stems: (stem === "all" ? stemsOf(song) : [stem]).filter((st) => active(s, st)) })));
 }
 const barT = (bi) => beatT(barBeat(bi));
 function barAt(t) {                         // bar index whose start is nearest at/under t
@@ -161,8 +164,9 @@ function barAt(t) {                         // bar index whose start is nearest 
 }
 function rowGeom() {
   const h = H() - TOP - SCROLL_H - 2;
-  const rh = h / STEMS.length;
-  return STEMS.map((st, i) => ({ stem: st, y: TOP + i * rh, h: rh }));
+  const list = song ? stemsOf(song) : STEMS;
+  const rh = h / Math.max(1, list.length);
+  return list.map((st, i) => ({ stem: st, y: TOP + i * rh, h: rh }));
 }
 function clampView() {
   if (!song) return;
@@ -213,11 +217,11 @@ function draw() {
   rows.forEach((r) => {
     const data = pk[r.stem];
     ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.fillRect(0, r.y + r.h - 1, w, 1);
-    ctx.fillStyle = "#8a8a92"; ctx.font = "600 10px Segoe UI"; ctx.fillText(r.stem, 10, r.y + 11);
+    ctx.fillStyle = "#8a8a92"; ctx.font = "600 10px Segoe UI"; ctx.fillText(stemLabel(song, r.stem), 10, r.y + 11);
     if (!data) return;
     const pps = song.peaks_per_sec, n = data.length / 2;
     const mid = r.y + r.h / 2, amp = r.h / 2 - 2;
-    ctx.fillStyle = STEM_COLORS[r.stem] + (hover && hover.stem && hover.stem !== r.stem ? "70" : "d0");
+    ctx.fillStyle = stemColor(r.stem, song) + (hover && hover.stem && hover.stem !== r.stem ? "70" : "d0");
     for (let x = PAD; x < w - PAD; x++) {
       const a = Math.max(0, Math.floor(xToT(x) * pps)), b = Math.max(a + 1, Math.floor(xToT(x + 1) * pps));
       let lo = 0, hi = 0;
@@ -246,7 +250,7 @@ function draw() {
     if (b > a) {
       const r = rows.find((q) => q.stem === hover.stem);
       const x0 = tToX(barT(a)), x1 = tToX(barT(b));
-      ctx.strokeStyle = STEM_COLORS[hover.stem]; ctx.lineWidth = 2;
+      ctx.strokeStyle = stemColor(hover.stem, song); ctx.lineWidth = 2;
       ctx.strokeRect(x0 + 1, r.y + 1, x1 - x0 - 2, r.h - 2);
     }
   }
@@ -358,6 +362,7 @@ canvas.addEventListener("contextmenu", (e) => {
   ] : [];
   showMenu(e, [
     ["Beat grid (the song's grid)…", () => openGrid(song.id, S.project?.clips.some((c) => c.song === song.id) ? S.project.id : null), "window"],
+    ...(String(song.id).startsWith("midi_") || String(song.id).startsWith("smp_") ? [] : [["Tempo map (find its grid structure)…", () => openTempoMap(song.id, S.project?.clips.some((c) => c.song === song.id) ? S.project.id : null), "window"]]),
     ["All its tools ▸", () => showMenu(e, songToolItems(song.id))],
     "-",
     ...markSel,
@@ -429,7 +434,7 @@ canvas.addEventListener("mousedown", (e) => {
   const move = (ev) => {
     if (!down.dragging && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 6) {
       down.dragging = true;
-      const stems = down.h.stem ? [down.h.stem] : STEMS.filter((st) => active(secForStems, st));
+      const stems = down.h.stem ? [down.h.stem] : stemsOf(song).filter((st) => active(secForStems, st));
       // length in the song's own beats as it plays (as recorded): a part at another tempo takes the time it takes
       S.drag = { payload: { song: song.id, pieces: piecesFor([{ a: ba, b: bb, name: h.inSel ? "" : label, stems }]) }, over: null, fine: false };
       ghost.hidden = false;
@@ -448,7 +453,7 @@ canvas.addEventListener("mousedown", (e) => {
       else if (!dropPayload()) toast("Drop it on the timeline above");
       S.drag = null; ghost.hidden = true; redrawTimeline();
     } else {
-      audition(down.h.stem ? [down.h.stem] : STEMS, down.srcBeat, down.endBeat, `${song.id}:${ba}:${bb}:${down.h.stem}`);
+      audition(down.h.stem ? [down.h.stem] : stemsOf(song), down.srcBeat, down.endBeat, `${song.id}:${ba}:${bb}:${down.h.stem}`);
     }
     down = null;
   };
@@ -458,7 +463,22 @@ canvas.addEventListener("mousedown", (e) => {
 
 // "Whole song" buttons: drag one onto the timeline (or click it: at the playhead) - that stem (or all of them) for
 // the whole song, one clip per section, each named after its section, so the ones you don't want can be deleted
-document.querySelectorAll("#svWhole .wh").forEach((btn) => {
+// the buttons follow the song's stems: drums / bass / other / vocals, or a MIDI song's parts
+let wholeSig = "";
+function wholeButtons() {
+  const box = document.getElementById("svWhole");
+  const list = stemsOf(song), sig = list.join("|") + "|" + list.map((st) => stemLabel(song, st)).join("|");
+  if (!box || sig === wholeSig) return;
+  wholeSig = sig;
+  box.querySelectorAll(".wh").forEach((b) => b.remove());
+  for (const st of ["all", ...list]) {
+    const b = document.createElement("button");
+    b.className = "small wh"; b.dataset.stem = st; b.textContent = st === "all" ? "all" : stemLabel(song, st);
+    box.appendChild(b); bindWhole(b);
+  }
+}
+document.querySelectorAll("#svWhole .wh").forEach((b) => bindWhole(b));
+function bindWhole(btn) {
   btn.addEventListener("mousedown", (e) => {
     if (e.button !== 0 || !song) return;
     e.preventDefault();
@@ -470,7 +490,7 @@ document.querySelectorAll("#svWhole .wh").forEach((btn) => {
         st.dragging = true;
         S.drag = { payload: { song: song.id, pieces: pcs }, over: null, fine: false };
         ghost.hidden = false;
-        ghost.textContent = `${stem === "all" ? "all stems" : stem} · whole song (${pcs.length} sections)`;
+        ghost.textContent = `${stem === "all" ? "all stems" : stemLabel(song, stem)} · whole song (${pcs.length} sections)`;
       }
       if (st.dragging) {
         ghost.style.left = ev.clientX + 12 + "px"; ghost.style.top = ev.clientY + 10 + "px";
@@ -483,13 +503,13 @@ document.querySelectorAll("#svWhole .wh").forEach((btn) => {
       if (!S.project) toast("Open or create a project first (Projects → New)", true);
       else if (!pcs.length) toast(`This song has no ${stem} in any section`, true);
       else if (st.dragging) { if (!dropPayload()) toast("Drop it on the timeline above"); }
-      else if (dropAtPlayhead({ song: song.id, pieces: pcs })) toast(`Added ${stem === "all" ? "every stem" : stem} at the playhead: ${pcs.length} sections`);
+      else if (dropAtPlayhead({ song: song.id, pieces: pcs })) toast(`Added ${stem === "all" ? "every stem" : stemLabel(song, stem)} at the playhead: ${pcs.length} sections`);
       S.drag = null; ghost.hidden = true; redrawTimeline();
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up, { once: true });
   });
-});
+}
 
 document.getElementById("svZoomIn").onclick = () => zoomSong(1 / 1.5);
 document.getElementById("svZoomOut").onclick = () => zoomSong(1.5);
@@ -619,7 +639,7 @@ function openClip(id) {
         <button class="small" data-slip="1">+1 beat</button><button class="small" data-slip="${bpb}">+1 bar</button></div>
       <div class="cv-row" style="margin-top:4px"><label>Source beat</label><input type="number" id="cvSrc" step="0.25" value="${r3(c.src)}"></div>
       <h4 style="margin-top:6px">Stem</h4>
-      <div class="row-gap">${STEMS.map((st) => `<button class="small ${st === c.stem ? "toggle on" : ""}" data-stem="${st}">${st}</button>`).join("")}</div>
+      <div class="row-gap">${stemsOf(info).map((st) => `<button class="small ${st === c.stem ? "toggle on" : ""}" data-stem="${st}">${stemLabel(info, st)}</button>`).join("")}</div>
     </div>`;
   clipView.querySelector(".cv-title").textContent = info.title || c.song;
   const Q = (s) => clipView.querySelector(s);

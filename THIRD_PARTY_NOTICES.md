@@ -5,7 +5,7 @@ programs listed here are stored in this repository**: `install.bat` downloads ea
 publish it, so you get it under its own terms. Python packages come from PyPI / the PyTorch index; their
 licenses are as each package declares.
 
-Checked on 2026-11-05. If you share or build on Re-Tex, keep this file with it.
+Checked on 2026-11-23. If you share or build on Re-Tex, keep this file with it.
 
 ## Copied into this repository
 
@@ -32,15 +32,19 @@ Checked on 2026-11-05. If you share or build on Re-Tex, keep this file with it.
 | soxr (python-soxr) | LGPL-2.1-or-later | used as an unmodified, separately installed library |
 | sounddevice | MIT | bundles PortAudio (MIT) |
 | pyloudnorm, fastapi, einops, rotary-embedding-torch, PyYAML | MIT | |
+| mido | MIT | MIDI file reading/writing for MIDI songs and Piano Roll |
+| onnxruntime, onnx-asr | MIT | optional local ONNX vocal transcription (Parakeet-TDT) |
 | python-multipart | Apache-2.0 | |
 
-## Programs (installed with winget)
+## Programs (installed with winget, or optional)
 
-| Program | License |
-|---|---|
-| Python | PSF License |
-| FFmpeg (Gyan.dev build) | GPL-3.0 (this build); see https://ffmpeg.org/legal.html |
-| Node.js | MIT |
+| Program | License | Notes |
+|---|---|---|
+| Python | PSF License | |
+| FFmpeg (Gyan.dev build) | GPL-3.0 (this build); see https://ffmpeg.org/legal.html | |
+| Node.js | MIT | |
+| FluidSynth *(optional)* | LGPL-2.1 | for SoundFont playback of MIDI tracks |
+| ACE Studio *(optional, external)* | Proprietary (Timedomain / acestudio.ai) | optional desktop app driven via its local CLI if installed; never bundled or installed by Re-Tex |
 
 ## Models (downloaded on install or first use)
 
@@ -51,6 +55,8 @@ Checked on 2026-11-05. If you share or build on Re-Tex, keep this file with it.
 | BS-RoFormer SW 6-stem, `BS-Rofo-SW-Fixed` | "SW" and "SW + Ultra blend" stems | **License: unknown** (as listed on its page) | https://huggingface.co/enerjazzer/BS-ROFO-SW-Fixed |
 | Beat This! final0 | beat grids | MIT (code and weights) | https://github.com/CPJKU/beat_this |
 | Whisper large-v3 via faster-whisper (Systran conversion) | lyrics | MIT | https://huggingface.co/Systran/faster-whisper-large-v3 |
+| NVIDIA Parakeet-TDT 0.6B v3 ONNX (`istupakov/parakeet-tdt-0.6b-v3-onnx`) — optional | alternative local vocal STT | CC-BY-4.0 | https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx |
+| GeneralUser GS SoundFont *(optional)* | default MIDI playback | GeneralUser GS License (free for personal & commercial use) | https://schristiancollins.com/generaluser.php |
 | wav2vec2 ASR base 960h (torchaudio) | word timing | MIT | https://docs.pytorch.org/audio/stable/generated/torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H.html |
 | MuScriptor large (Kyutai / Mirelo) — Full install | beat-grid second opinion | **CC BY-NC 4.0**, gated (log in and accept). Use it only on music you have the rights to transcribe. | https://huggingface.co/MuScriptor/muscriptor-large |
 | Gemma 3 12B it QAT Q4_0 GGUF (Google) — Full install | offline DJ planner / tags | **Gemma Terms of Use** and Prohibited Use Policy, gated | https://huggingface.co/google/gemma-3-12b-it-qat-q4_0-gguf |

@@ -18,14 +18,20 @@ it here, in place.
 | Run the app | `Re-Tex.bat` (port 8765; `--port`, `--no-browser`) |
 | The library (songs, stems, projects) | `data/` by default; the Settings dialog or `%APPDATA%\MashupLab\settings.json` "data" can move it; env `MASHLAB_DATA` overrides |
 | Library: per-song folders | `songs/<id>/` (stems FLAC, song.json, features.npz, peaks) |
-| Library: other folders | `cache/` (warped renders), `samples/smp_*` (sample-editor bakes), `uploads/` (source audio), `projects/`, `yue2/` (takes), `meta.json`, `config.json` |
+| Library: other folders | `cache/` (warped renders), `samples/smp_*` (sample-editor bakes), `midi/midi_*` (MIDI songs), `uploads/` (source audio), `projects/`, `yue2/` (YuE2 takes), `ace/` (ACE Studio takes), `readhead/` (ReadHead working files), `meta.json`, `config.json` |
 | Separation checkpoints | `models/` (`config.SEP_MODELS`) |
+| SoundFonts *(optional)* | `models/soundfonts/*.sf2` (for FluidSynth MIDI playback) |
+| TempoMap sidecar | `tempomap/` (`maps/`, `cache/`, `key/` are gitignored) |
 | GGUF models | `data/models/` (`config.MODELS`) |
 | Music Flamingo | its own environment `.venv-listen`, configured in `data/config.json` "listen" |
 
 ## Rules
 - **Never delete, purge or compress the user's stems, renders or library files without an explicit yes.** Removing
   true duplicates is fine once shown what is duplicated and where.
+- **No quiet fallbacks (`components.py`):** when a model, library or external program is missing or broken, Re-Tex
+  stops and says what isn't working, why, and how to fix it (with a link and an opt-in Download button where
+  applicable; nothing downloads until clicked). Where carrying on makes sense, it emits a visible fallback notice.
+  Use `components.require(key)` / `components.fallback(...)` / `components.notice(...)` — never bare silent fallbacks.
 - Share audio test results as files (MP3s with notes on what each clip is), not through the in-app Listening window.
 - Never edit across lanes or ripple the arrangement. Clip edits belong in the pop-out sample editor.
 - mixer.py stays as it is unless the change is the point; the project schema is additive only.
@@ -72,27 +78,36 @@ it here, in place.
   project moves to stems_locked/<rev>/ + info.locks[sig]. Never rmtree stems_locked/.
 - **Song tools menu** (songtools.js): the same list on every right-click (clip, lane header, arrangement bar, library,
   song view) and the arrangement bar's "Tools" button.
-- **Lock** (lock.py): beat-by-beat Rubber Band is clean on right marks; warble came from wrong marks. When marks run
-  at another speed the lock button ASKS ("Repair, then lock", "Line it up by ear", "Lock anyway").
-- **DJ Mix, Remix style** (djremix.py, the default): modelled on a reference mix by the author - a bed played as
-  recorded, a guest rapping on top, a third song's drums. In it: the bed's music holds for long stretches with one
-  jump to its chorus at the drop; the bed's vocal is off under the guest's verses; a short guest phrase loops every 4
-  bars; stutters lead into sections; a one-bar break before the drop; the guest gets long stretches that end where he
-  stops. The engine picks the bed by fit; only the guest's key moves. The planner plans the bed's path and places
-  whole lines by part and bar; the engine keeps each line's pickup and refuses lines over clashing sections.
-  - Lines come from the vocal's LEVEL, not pitch tracking: a stop = 24 dB down for at least 150 ms.
-  - Songs without words get Whisper'd on first use (lyrics.json).
-- **DJ Mix, Blend style** (djbrain.py, llm.py; kept as an option): a per-stem part script. It lost to the ear twice
-  ("a weird fade out mid word"; a bass under the other song's chords "sounds pretty bad, as they are stems").
-  - Planning goes through Claude Code headless (`claude -p --json-schema`, tools off) on the user's own Claude login;
-    no API key. Never use `--bare` (it ignores the login). Gemma (local GGUF) is the offline option and plans badly.
-- **Listen and describe** (listen.py, listen_worker.py): Music Flamingo, in its own environment, writes a genre,
-  sub-genre and a sound line per song from 30 s of audio; it beat a title-based text model in a blind test. Audio LLMs
-  CAN'T plan mixes or judge timing; they take ONE audio per request.
-- **Reimagine / YuE2** (reimagine.py, yue2link.py, takealign.py, align.py, userlyrics.py): bounces the live mix and
-  sends it to a YuE2 Studio server (127.0.0.1:8791) for a cover, aligned bar-for-bar, then locked. YuE2 keeps its own
-  clock for words: score-side steering FAILED twice. What works: typed lyrics + forced alignment (wav2vec2) +
-  per-line re-timing after generation.
+- **Lock** (lock.py, gridaudit.py): supports **Beat-by-beat** and **Smooth** lock (Hann-smoothed pitch-stable pilot
+  map + residual drum-hit trim). Marks within 20 ms of a project beat show green; shifted bars show blue (with a
+  one-click fix); off-grid beats show red. When marks run at another speed the lock button asks before locking.
+- **TempoMap sidecar** (`tempomap/`, `mashlab/tempomap_side.py`): standalone subprocess that analyses a song's
+  sections, meter changes, and downbeats and proposes marks for the Beat grid window.
+- **Auto-Mashup: Pick Stems** (`gridmash.py`, `web/js/mashup.js`): combine any stems from any songs fitted onto one
+  master timeline (including cross-meter mashups using stretch-not-cut warps and singer turn-taking).
+- **MIDI songs, Piano Roll, Instruments & Chop Kits** (`midi.py`, `midi_api.py`, `midi_live.py`, `instruments.py`,
+  `chops.py`, `glitch.py`, `midi_remix.py`, `web/pianoroll.html`): MIDI songs sit in the library as stem-like items
+  (`midi_<id>`), rendered through FluidSynth (SF2), Pedalboard VST3 instruments, Sampler, or Chop Kits (tuned chops,
+  `"Make it say"`, drum/flow/cue kits) with a low-latency live keyboard pad, 25-effect Glitch scores, MIDI-to-audio
+  remixes (Arrangement / Chord-follow / Groove), and MuScriptor stem-to-MIDI conversion.
+- **DJ Mix, Remix style** (`djremix.py`, the default): a bed played as recorded, a guest vocal on top, and optional
+  third-song drums. Lines come from the vocal's level (a stop = 24 dB down for >=150 ms); songs without words get
+  Whisper'd on first use (`lyrics.json`). **Blend style** (`djbrain.py`, `llm.py`) is kept as an option. Planning runs
+  via Claude Code headless (`claude -p --json-schema`, tools off; never `--bare`) or local Gemma GGUF offline.
+- **Listen and describe** (`listen.py`, `listen_worker.py`): Music Flamingo in `.venv-listen` writes genre, sub-genre
+  and a sound line per song from 30 s of audio.
+- **Unified Reimagine — YuE2 Studio & ACE Studio** (`reimagine.py`, `yue2link.py`, `acelink.py`, `acereimagine.py`,
+  `takealign.py`, `align.py`, `userlyrics.py`, `web/js/reimagine.js`, `web/js/acereimagine.js`):
+  - **YuE2 Studio:** bounces the live mix to a local YuE2 Studio server (`127.0.0.1:8791`) for full covers, aligned
+    bar-for-bar and locked, with typed lyrics + wav2vec2 forced alignment + per-line vocal re-timing.
+  - **ACE Studio:** drives a local `acestudio-cli.exe` install (never modifies unsaved projects via `ensure_clean_stage`)
+    across 4 modes: Full Reimagine / AI Cover (`music-enhancer`, 3s–240s window, Adherence ↔ Drift slider, True
+    Instrumental vocal-muting + BPM anchoring), Instrument / Stem Swap (`add-a-layer` with stem masking), Free Voice &
+    Timbre Swap (`voice-changer`, 0 credits across 33 voices + 14 instruments), and Cloud History reuse (0 credits).
+  - **Selectable Lyrical STT (`mashlab/backends/asr.py`, `/api/ace/stt`, `/api/ace/transcribe`):** preserves the default
+    `FasterWhisperLarge` (`vad_filter=True`) untouched while offering opt-in `whisper_novad` (VAD off + per-island
+    normalization for soft/breathy vocals), `ace_v2m` (ACE Studio's free 0-credit Vocal-to-MIDI V2 LRC extraction), and
+    `parakeet_tdt` (NVIDIA Parakeet-TDT 0.6B v3 int8 via `onnx-asr` + `onnxruntime`, opt-in `components.py` download).
 - **Sample editor** (sampler.py, web/sample.html): one clip at a time on a grid from 1/2 to 1/64 (triplets too):
   chop, stutter, layer, tape delay, echo. Cut vocals on word starts; place effects at section boundaries.
 - **Render cache** (warp.py, draft.py): warped stems per tempo/key as raw float32 .npy, plus drafts/ and clips/.

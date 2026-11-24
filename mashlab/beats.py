@@ -26,7 +26,9 @@ def detect_full(y_mono, sr):
     global _model
     with _lock:
         if _model is None:
-            _model = (Audio2Frames(checkpoint_path="final0", device="cuda" if torch.cuda.is_available() else "cpu"),
+            from . import components
+            components.require("beat_this")     # its checkpoint downloads only when you press Download
+            _model = (Audio2Frames(checkpoint_path="final0", device=components.device("Beat detection")),
                       Postprocessor(type="minimal"))
         a2f, post = _model
         with torch.no_grad():
@@ -44,12 +46,16 @@ def detect(y_mono, sr, logits=False):
 
 
 def body_env(y_drums_mono, sr):
-    """Onset strength of the drums' snare/clap band (150-1500 Hz). Hi-hat eighths make full-band onsets fire
-    as hard half a beat off as on the beat, and rock kicks are often syncopated; the snare (or clap) keeps
-    to the beats."""
-    import scipy.signal as sg
-    y = sg.sosfilt(sg.butter(4, [150, 1500], "band", fs=sr, output="sos"), y_drums_mono).astype(np.float32)
-    return _onset_env(y, sr)
+    """Zero-phase onset strength of kick/sub (30-160 Hz) + snare/clap (250-3500 Hz) at ~500 Hz.
+
+    Uses zero-phase filtfilt (0.0 ms group delay) instead of causal 150-1500 Hz sosfilt so electronic /
+    metal kicks below 150 Hz are never lost and drum hits are never lagged.
+    """
+    from . import gridaudit
+    body, _, _, _, _ = gridaudit.onset_curves(y_drums_mono, sr=sr)
+    hop = max(1, int(round(sr / gridaudit.ENV_FPS)))
+    mx = float(body.max()) if len(body) else 0.0
+    return (body / (mx + 1e-9)).astype(np.float32), hop
 
 
 def evidence(beat_logits, env, hop, sr, fps=50.0):
@@ -675,6 +681,16 @@ def build_grid(y_mix_mono, y_drums_mono, sr, dur, raw=None):
     if steady is not None:                                 # one steady tempo fits the whole song: use it
         beats, segments = np.asarray(steady, float), [[0, len(steady)]]
         parts, stable = [beats], True
+    if raw is None and (y_drums_mono is not None or y_mix_mono is not None):
+        # Zero-phase full-band k=1 transient alignment: removes Beat This!'s constant bias and local drift
+        from . import gridaudit
+        drums_src = y_drums_mono if y_drums_mono is not None else y_mix_mono
+        aligned, _, amode = gridaudit.align_marks_to_hits(beats, drums_src, sr=sr, mix_mono=y_mix_mono, max_shift_s=0.005)
+        if len(aligned) == len(beats):
+            beats = aligned
+            if amode == "steady_locked":
+                segments, parts, stable = [[0, len(beats)]], [beats], True
+                steady = beats
 
     # extend the grid to cover the whole file (silent intros/outros get beats too)
     ibi0 = beats[1] - beats[0]

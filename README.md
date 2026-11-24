@@ -44,8 +44,15 @@ folder, never in this folder. Skip it and those two features just stay off.
 **Optional, not installed by `install.bat`:**
 - **DJ Mix planning with Claude** uses Claude Code on your own Claude login (no API key). Install Claude Code
   (https://docs.claude.com/en/docs/claude-code) and log in once; Re-Tex finds it. Without it, DJ Mix uses Gemma.
-- **Reimagine** sends a mix to a separate **YuE2 Studio** install. Point Re-Tex at it in `data/config.json`:
-  `"yue2": {"studio": "<your YuE2 folder>", "url": "http://127.0.0.1:8791"}`.
+- **Reimagine with YuE2 Studio** sends a mix to a separate **YuE2 Studio** install. Point Re-Tex at it in
+  `data/config.json`: `"yue2": {"studio": "<your YuE2 folder>", "url": "http://127.0.0.1:8791"}`.
+- **Reimagine with ACE Studio** drives a local **ACE Studio** desktop install (`acestudio-cli.exe`). Configure custom
+  paths if needed in `data/config.json`: `"ace": {"cli": "C:/Program Files/ACE Studio/acestudio-cli.exe", "vault": "<folder>"}`.
+- **MIDI playback with SoundFonts:** install **FluidSynth** on `PATH` (or in `tools/fluidsynth/`) and drop a `.sf2`
+  SoundFont (such as GeneralUser GS) into `models/soundfonts/`. VST3 instruments and built-in Chop Kits work without FluidSynth.
+- **NVIDIA Parakeet-TDT 0.6B v3 (ONNX):** optional local vocal transcription engine (Settings → Components, ~670 MB int8 download).
+
+**No quiet fallbacks:** open **Settings → Components** to see every model, library, and external tool Re-Tex uses, with one-click SHA-256-verified downloads and clear fixes whenever something is missing.
 
 Your songs, stems, projects and renders live in `data/` (created on first run). Nothing in `data/` is ever uploaded
 anywhere; it's ignored by git.
@@ -81,6 +88,33 @@ The **By roles** tab lets you choose candidates for each part:
 - 🎸 **Bass from:** any songs, or keep the bed's own bass.
 
 Every combination is built and rated, and all of them are listed (best first, 40 at a time). Vocals are planned and rated exactly as in **Every pairing**. Drums are energy-matched and only play where the bed originally had drums, so breakdowns stay breakdowns. Bass is matched against the bed's chords using the older chroma measure. Both tabs let you tick whole **folders**, filter by name, or use all/none.
+
+### Auto-Mashup: Pick Stems
+
+The **Pick stems** tab lets you assemble any combination of stems from any songs onto one master timeline — including cross-meter mashups using smooth stretch-not-cut warps and automatic singer turn-taking when multiple vocals share a mix.
+
+## MIDI songs, Piano Roll, Chop Kits & Glitch scores
+
+Import `.mid` files (or transcribe any audio stem to MIDI with MuScriptor) and treat them like stem-based songs in the library:
+- **Pop-out Piano Roll (`web/pianoroll.html`):** edit notes, velocities, and timing, or play live from your computer keyboard (~6 ms latency).
+- **Instruments:** play MIDI parts through FluidSynth (`.sf2` SoundFonts), Pedalboard VST3 instrument plugins, the built-in Sampler, or **Chop Kits** built directly from any song in your library (`keys`, `order`, `shuffle`, `drums`, `flow`, `cue`, tuned chops, and `"Make it say"` word chops).
+- **Glitch scores & MIDI remixes:** apply 25 grid-locked Glitch score effects or drive an audio lane's arrangement, chords, or groove directly from a MIDI song.
+
+## Unified Reimagine (YuE2 Studio & ACE Studio)
+
+Click **Reimagine** to re-produce an open mix as a new cover, genre swap, instrument swap, or vocal swap, then stem-split, bar-align, and drop takes right back onto your timeline:
+- **YuE2 Studio engine:** full-mix covers with SheetSage2 score analysis, section tags, bar-for-bar alignment, and wav2vec2 per-line vocal re-timing.
+- **ACE Studio engine:** drives a local ACE Studio install (guarding any unsaved ACE project) across 4 modes:
+  1. **Full Reimagine / Genre Swap** (`music-enhancer`, 3s–240s window) with continuous **Adherence ↔ Drift** control, an 8-axis Style Builder, one-click ~3:55 bar-fit buttons, BPM anchoring, True Instrumental mode (auto-mutes vocals + `[Instrumental]`), and an always-visible **Pre-send check** preview of the exact lyrics and audio sent to ACE.
+  2. **Instrument / Stem Swap** (`add-a-layer`) with stem masking — mute drums/bass/other from the reference bounce and generate a locked replacement stem.
+  3. **Voice & Timbre Swap** (`voice-changer`, **0 credits**) — batch-audition up to 6 of ACE's 33 voice + 14 instrument models in one render.
+  4. **Cloud History Reuse** (**0 credits**) — pull prior ACE cloud takes straight into Re-Tex for stem separation and alignment.
+- **4-Engine Lyrical STT Selector & Live Re-transcribe (0 credits):** choose between **Whisper large-v3 (Default · VAD on)**, **Whisper large-v3 (VAD off · breathy/soft vocals)**, **ACE Vocal-to-MIDI V2 (Free · singing-trained)**, and **NVIDIA Parakeet-TDT 0.6B v3 (Local ONNX)** before preparing or live in Stage 2 to A/B compare transcripts before sending to ACE.
+
+## Smooth Lock, TempoMap & Beat Grid Audit
+
+- **Smooth Lock vs Beat-by-beat Lock:** Smooth Lock follows gradual tempo drifts with a pitch-stable Hann-smoothed pilot map and drum-hit residual trim. Beat marks within 20 ms of the project grid show **green**, shifted bars show **blue** (with a one-click fix), and off-grid beats show **red**.
+- **TempoMap sidecar (`tempomap/`):** right-click any song to run a standalone tempo/meter structure analysis and propose beat/bar marks straight into the Beat Grid window.
 
 ## How mashups are rated (and why you can trust the numbers)
 

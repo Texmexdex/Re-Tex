@@ -26,10 +26,12 @@ NUMBERS = {"0": "zero", "1": "one", "2": "two", "3": "three", "4": "four", "5": 
 def _load():
     global _model
     if _model is None:
+        from . import components
+        components.require("wav2vec2")
         import torch
         import torchaudio
         B = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
-        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        dev = components.device("Lyrics alignment")
         _model = (B.get_model().to(dev).eval(), {c: i for i, c in enumerate(B.get_labels())}, dev)
     return _model
 

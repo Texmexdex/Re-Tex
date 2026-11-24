@@ -6,13 +6,14 @@
 import { api } from "./api.js";
 import { S, on, edit, toast, uid } from "./state.js";
 import { modal } from "./ui.js";
+import { mountAce, unmountAce } from "./acereimagine.js";
 
 let m = null, job = null, jobKind = null, prep = null, takes = null;
 const pendingAdd = new Map();             // song id -> project id it should be dropped into once lined up
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const saved = (() => { try { return JSON.parse(localStorage.getItem("reimagine") || "{}"); } catch { return {}; } })();
-const st = Object.assign({ prompt: "", takes: 2, addToMix: true, mode: "cover_full", cfg: 1.0, flow: 32, voices: "both",
-                           seed: "", cont: 30 }, saved);
+const st = Object.assign({ engine: "yue2", prompt: "", takes: 2, addToMix: true, mode: "cover_full", cfg: 1.0, flow: 32,
+                           voices: "both", seed: "", cont: 30 }, saved);
 const persist = () => { try { localStorage.setItem("reimagine", JSON.stringify(st)); } catch {} };
 const mmss = (s) => { const t = Math.round(s); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
 
@@ -29,8 +30,27 @@ const strengthWord = (v) => (v <= 1.0 ? "YuE2's default" : v < 1.15 ? "a little 
 
 export function openReimagine() {
   if (m) return;
-  m = modal("Reimagine with YuE2", `<div id="riBody"></div><span id="riProg" style="color:var(--dim)"></span>`,
-    { wide: true, onClose: () => (m = null) });
+  m = modal("Reimagine", `
+    <div class="ri-engines" role="tablist" aria-label="Reimagine engine">
+      <button type="button" class="ri-eng${st.engine === "yue2" ? " on" : ""}" data-eng="yue2">
+        <b>YuE2 Studio</b> <span class="dim">local GPU · score &amp; real-audio covers</span>
+      </button>
+      <button type="button" class="ri-eng${st.engine === "ace" ? " on" : ""}" data-eng="ace">
+        <b>ACE Studio</b> <span class="dim">adherence/drift · genre &amp; stem swap · free voice swap</span>
+      </button>
+    </div>
+    <div id="riBody"></div><span id="riProg" style="color:var(--dim)"></span>`,
+    { wide: true, onClose: () => { unmountAce(); m = null; } });
+  m.body.querySelectorAll(".ri-eng").forEach((b) => {
+    b.onclick = () => {
+      if (st.engine === b.dataset.eng) return;
+      st.engine = b.dataset.eng;
+      persist();
+      m.body.querySelectorAll(".ri-eng").forEach((x) => x.classList.toggle("on", x.dataset.eng === st.engine));
+      prog("");
+      render();
+    };
+  });
   render();
 }
 
@@ -39,7 +59,19 @@ function prog(html) { const p = m?.body.querySelector("#riProg"); if (p) p.inner
 
 function render() {
   if (!m) return;
+  if (st.engine === "ace") {
+    mountAce({
+      body,
+      prog,
+      close: () => m?.close(),
+      isVisible: () => !!m && st.engine === "ace",
+      trackPending: (sid, pid) => pendingAdd.set(sid, pid),
+    });
+    return;
+  }
+  unmountAce();
   if (job) prog(`<span class="spinner"></span> ${jobKind === "prep" ? "preparing…" : "YuE2 is performing…"}`);
+  else prog("");
   if (takes) return showTakes();
   if (prep) return showReview();
   showStart();
@@ -48,8 +80,8 @@ function render() {
 async function showStart() {
   body().innerHTML = `
     <p class="lead">YuE2 re-performs the open mix - a DJ mix or one you made by hand - as one new production: its
-      melodies, chords and lyrics, re-sung and re-instrumented in a style the DJ writes, at the mix's tempo and key.
-      First it prepares everything it will get, so you can edit the lyrics and the style before it performs.</p>
+      melodies, chords and lyrics, re-sung and re-instrumented in a new style, at the mix's tempo and key.
+      First it prepares everything it will get and shows what it found in the songs, so you can shape the style (the style builder) and edit the lyrics before it performs.</p>
     <textarea id="riPrompt" rows="2" spellcheck="false" placeholder="Any direction for the sound? e.g. heavier drums, darker, live band, slower and dreamier (or leave empty)"></textarea>
     <div class="row-gap"><button id="riPrep" class="primary">1 · Prepare</button>
       <span class="dim">renders the mix, hears its lyrics, reads its melody and chords (a minute or two)</span>
@@ -131,6 +163,81 @@ function placedTable(pl) {
     <table class="dj-plan"><thead><tr><th>section</th><th>starts</th><th></th><th>lyrics</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+// The style builder (Nov 17): the user reads what Re-Tex found, then shapes the style himself in plain descriptors,
+// in the order YuE2 Studio's own examples use ("Instrumental, expressive chamber string ensemble, lyrical violin
+// melody, warm viola and cello accompaniment, ..., natural concert hall acoustics, no vocals, no singing, no choir,
+// no spoken words"). Chips are only suggestions; any words typed in the fields go in as they are.
+const BUILD = [
+  ["genre", "Genre / style", "e.g. indie folk, folktronica"],
+  ["lead", "Lead instruments", "what carries the melody"],
+  ["rhythm", "Drums and bass", "the rhythm section"],
+  ["sound", "Sound and space", "production, room, texture"],
+  ["mood", "Mood and dynamics", "how it feels and moves"],
+];
+const CHIPS = {
+  genre: ["indie folk", "folktronica", "Icelandic post-rock", "ambient", "neoclassical", "chamber pop", "synthwave",
+    "trip-hop", "lo-fi hip hop", "jazz", "progressive metal", "post-rock", "dream pop", "electronica", "cinematic"],
+  lead: ["fingerpicked acoustic guitar", "acoustic guitar", "felt piano", "piano", "electric piano", "music box",
+    "glockenspiel", "string ensemble", "cello", "violin", "brass section", "flute", "synth lead", "clean electric guitar",
+    "distorted electric guitar", "banjo", "harp"],
+  rhythm: ["glitchy electronic beats", "soft brushed drums", "live drums", "punchy drums", "tribal percussion",
+    "polyrhythmic percussion", "hand claps", "no drums", "deep round bass", "upright bass", "warm synth bass", "heavy bass"],
+  sound: ["warm analog synth pads", "ambient pads", "field recordings", "lo-fi tape texture", "reverb-drenched",
+    "spacious", "intimate close-miked", "natural room acoustics", "concert hall acoustics", "crisp modern production"],
+  mood: ["melancholic", "dreamy", "hypnotic", "dark", "brooding", "hopeful", "uplifting", "gentle", "tense",
+    "aggressive", "slow-building", "dynamic swells", "minor key", "major key", "high energy"],
+};
+const NO_VOCALS = "no vocals, no singing, no choir, no spoken words";
+function heardBox(p) {
+  const h = p.heard || [];
+  if (!h.length) return "";
+  return `<div class="ri-guide">${h.map((x) => `<div><b>Found in the song${h.length > 1 ? ` (${esc(x.song)})` : ""}:</b>
+      ${x.preset ? `artist style <b>${esc(x.preset)}</b> - ${esc(x.preset_style)}` : "no artist style for it"}
+      ${x.measured?.length ? ` · measured: ${esc(x.measured.join(", "))}` : ""}
+      ${x.genre ? ` · heard as <b>${esc(x.genre)}</b>${x.sound ? ` - ${esc(x.sound)}` : ""}` : ""}</div>`).join("")}</div>`;
+}
+function initBuilder(B) {
+  const q = (s) => B.querySelector(s);
+  const list = (k) => q(`#rb_${k}`).value.split(",").map((x) => x.trim()).filter(Boolean);
+  const set = (k, items) => { q(`#rb_${k}`).value = items.join(", "); };
+  const markChips = () => B.querySelectorAll(".ri-chip").forEach((c) => {
+    c.classList.toggle("on", list(c.dataset.k).map((x) => x.toLowerCase()).includes(c.dataset.v.toLowerCase()));
+  });
+  const compose = () => {
+    const parts = [];
+    if (q("#rbIns").checked) parts.push("Instrumental");
+    for (const [k] of BUILD) parts.push(...list(k));
+    if (q("#rbIns").checked) parts.push(NO_VOCALS);
+    return parts.join(", ");
+  };
+  const preview = () => { markChips(); q("#rbPreview").textContent = compose() ? "Will read: " + compose() : ""; };
+  // start: your words as the genre, and what the song has that the chips name (its rhythm, mood) - all editable
+  const b = prep.builder || {};
+  if (!prep.builder) {
+    const found = ((prep.heard || []).map((x) => `${x.preset_style}, ${(x.measured || []).join(", ")}`).join(", ")).toLowerCase();
+    b.genre = (prep.prompt || "").split(",").map((x) => x.trim()).filter(Boolean);
+    for (const k of ["rhythm", "mood"]) b[k] = CHIPS[k].filter((c) => found.includes(c.toLowerCase()));
+    b.ins = st.mode === "cover_instrumental" || prep.sung === false;
+  }
+  for (const [k] of BUILD) set(k, b[k] || []);
+  q("#rbIns").checked = !!b.ins;
+  const keep = () => { prep.builder = { ins: q("#rbIns").checked }; for (const [k] of BUILD) prep.builder[k] = list(k); preview(); };
+  B.querySelectorAll(".ri-brow input, #rbIns").forEach((e) => { e.oninput = keep; e.onchange = keep; });
+  B.querySelectorAll(".ri-chip").forEach((c) => c.onclick = () => {
+    const k = c.dataset.k, cur = list(k), i = cur.findIndex((x) => x.toLowerCase() === c.dataset.v.toLowerCase());
+    if (i >= 0) cur.splice(i, 1); else cur.push(c.dataset.v);
+    set(k, cur); keep();
+  });
+  q("#rbUse").onclick = () => {
+    const s = compose();
+    if (!s) { toast("Pick or type something first", true); return; }
+    q("#riStyle").value = s; prep.styleEdit = s;
+    toast("Style prompt set from the builder - edit it there if you like");
+  };
+  q("#rbFound").onclick = () => { q("#riStyle").value = prep.style; prep.styleEdit = prep.style; };
+  preview();
+}
+
 function showReview() {
   body().innerHTML = `
     <div class="dj-head"><b>${esc(prep.title)}</b> · ${prep.bpm} BPM · ${mmss(prep.mix_seconds)} · ${prep.sections.length} sections <span class="dim">· edit anything below, then perform</span></div>
@@ -143,8 +250,17 @@ function showReview() {
         <input type="range" id="riCfg" min="1" max="1.5" step="0.05">
         <span class="dim">How hard YuE2 follows the style prompt (its CFG). Higher = more of the new style, further from the mix's own sound.</span></label>
     </div>
-    <label class="ri-lab">Style prompt <span class="dim">(what YuE2 is told about the sound; the tempo is added for you)</span></label>
-    <textarea id="riStyle" rows="2" spellcheck="false"></textarea>
+    <label class="ri-lab">Style prompt <span class="dim">(what YuE2 is told about the sound; the tempo is added for you). It starts as what Re-Tex found in the songs - shape it below, or type over it</span></label>
+    <textarea id="riStyle" rows="3" spellcheck="false"></textarea>
+    ${heardBox(prep)}
+    <details class="ri-adv ri-build" open><summary><b>Style builder</b> <span class="dim">- pick what you want; it writes the style the way YuE2 Studio's own examples do: genre, lead instruments, rhythm section, sound and space, mood${""}</span></summary>
+      <label class="ri-chk"><input type="checkbox" id="rbIns"> Instrumental <span class="dim">(adds "no vocals, no singing, no choir, no spoken words" - on for an instrumental cover)</span></label>
+      ${BUILD.map(([k, label, ph]) => `<div class="ri-brow"><label>${label}</label><input id="rb_${k}" spellcheck="false" placeholder="${esc(ph)}">
+        <div class="ri-chips">${CHIPS[k].map((c) => `<button type="button" class="ri-chip" data-k="${k}" data-v="${esc(c)}">${esc(c)}</button>`).join("")}</div></div>`).join("")}
+      <div class="dim" id="rbPreview"></div>
+      <div class="row-gap"><button id="rbUse" class="small primary">Put it in the style prompt</button>
+        <button id="rbFound" class="small" title="Back to what Re-Tex found in the songs">Back to what Re-Tex found</button></div>
+    </details>
     <div id="riLyricsWrap">
       <label class="ri-lab">Lyrics <span class="dim">(${prep.lyrics_from === "yours" ? "the songs' own lyrics you typed (song view → Lyrics), already lined up" : prep.lyrics_from === "mixed" ? "yours where you typed a song's lyrics (song view → Lyrics), Whisper's guess for the rest" : "Whisper's guess - type a song's lyrics once in the song view (Lyrics) and every mix uses them"}. Edit or paste your own, no tags needed, then <b>Place my lyrics</b>: each line is lined up with the vocals and filed under the section it's sung in)</span></label>
       <textarea id="riLyrics" rows="12" spellcheck="false"></textarea>
@@ -174,6 +290,7 @@ function showReview() {
   q("#riStyle").value = prep.styleEdit ?? prep.style;
   q("#riLyrics").value = prep.lyricsEdit ?? prep.lyrics;
   q("#riStyle").oninput = (e) => { prep.styleEdit = e.target.value; };
+  initBuilder(B);
   q("#riLyrics").oninput = (e) => { prep.lyricsEdit = e.target.value; };
   const cfg = q("#riCfg"), cfgV = q("#riCfgV");
   const showCfg = () => { cfgV.textContent = `${(+cfg.value).toFixed(2)} · ${strengthWord(+cfg.value)}`; };
@@ -185,6 +302,7 @@ function showReview() {
   const cont = q("#riCont"); cont.value = st.cont; cont.oninput = () => { st.cont = +cont.value || 30; persist(); applyMode(); };
   B.querySelectorAll('input[name="riMode"]').forEach((r) => r.onchange = () => {
     st.mode = r.value; persist();
+    if (st.mode === "cover_instrumental") { const c = q("#rbIns"); if (c && !c.checked) { c.checked = true; c.onchange(); } }
     B.querySelectorAll(".ri-mode").forEach((c) => c.classList.toggle("on", c.querySelector("input").checked));
     applyMode();
   });
@@ -307,51 +425,81 @@ async function showTakes() {
 
 on("event:job", (msg) => {
   if (!job || msg.job.id !== job) return;
-  if (msg.job.status === "running") prog(`<span class="spinner"></span> ${esc(msg.job.message || "")} <span class="pct">${Math.round(100 * (msg.job.progress || 0))}%</span>`);
+  const visible = !!m && st.engine === "yue2";
+  if (msg.job.status === "running" && visible) prog(`<span class="spinner"></span> ${esc(msg.job.message || "")} <span class="pct">${Math.round(100 * (msg.job.progress || 0))}%</span>`);
   if (msg.job.status === "error" || msg.job.status === "cancelled") {
     const txt = msg.job.status === "cancelled" || /cancelled/.test(msg.job.error || "") ? "cancelled" : msg.job.error;
-    prog(esc(txt)); if (!m) toast(txt, txt !== "cancelled"); job = null;
-    if (m && !prep && !takes) showStart();
+    if (visible) prog(esc(txt)); else toast(txt, txt !== "cancelled");
+    job = null;
+    if (visible && !prep && !takes) showStart();
   }
   if (msg.job.status === "done" && msg.result) {
     if (jobKind === "prep") { prep = msg.result; takes = null; } else { takes = msg.result; }
-    job = null; prog("");
-    if (m) render(); else toast(jobKind === "prep" ? "Reimagining prepared - open Reimagine to review the lyrics and style" : "Your YuE2 takes are ready - open Reimagine to listen", false, 8000);
+    job = null; if (visible) prog("");
+    if (visible) render(); else toast(jobKind === "prep" ? "Reimagining prepared - open Reimagine to review the lyrics and style" : "Your YuE2 takes are ready - open Reimagine to listen", false, 8000);
   }
 });
 
-// a saved take has been lined up with the mix: drop its stems into the project it came from, on muted tracks
+// a saved take has been lined up with the mix: drop its stems into the project it came from
 on("event:reimagine", (msg) => {
   const target = msg.project || pendingAdd.get(msg.sid);     // the server carries it, so a reload in between is fine
   pendingAdd.delete(msg.sid);
   if (!msg.aligned || !target) return;
   if (S.project?.id !== target) { toast(`${msg.title} is lined up - its stems are in the library (the mix it came from isn't open)`, false, 7000); return; }
   if (S.project.clips.some((c) => c.song === msg.sid)) return;   // already added (e.g. a second open page)
-  const vocalsOnly = !!msg.vocals_only;
+
+  const engine = msg.engine === "ace" ? "ACE" : "YuE2";
+  const dropMode = msg.drop_mode || (msg.vocals_only ? "vocals" : "all");
+  const startBeat = Number(msg.start_beat || 0);
+  const singleStem = msg.target_stem || "other";
+  const stemsToAdd = dropMode === "single" ? [singleStem]
+    : dropMode === "vocals" ? ["vocals"]
+    : dropMode === "instrumental" ? ["drums", "bass", "other"]
+    : ["drums", "bass", "other", "vocals"];
+  const playLive = (dropMode === "vocals" || dropMode === "instrumental" || dropMode === "single");
+  const shortTitle = engine === "ACE"
+    ? msg.title.replace(/^.*\(ACE /, "ACE ").replace(/\)$/, "")
+    : msg.title.replace(/^.*\(YuE2 /, "YuE2 ").replace(/\)$/, "");
+
   let muted = 0;
   edit((p) => {
     p.songs[msg.sid] = { transpose: 0, mult: 1, lock: !!msg.lock };   // its stems locked to the mix's grid
-    if (vocalsOnly) {                                                   // the new vocals replace the mix's own
+    if (dropMode === "vocals") {                                       // new vocals replace the mix's own
       for (const t of p.tracks) {
         const cl = p.clips.filter((c) => c.track === t.id);
         if (!t.mute && cl.length && cl.every((c) => c.stem === "vocals")) { t.mute = true; muted++; }
       }
+    } else if (dropMode === "instrumental") {                          // new backing band under mix's vocals
+      for (const t of p.tracks) {
+        const cl = p.clips.filter((c) => c.track === t.id);
+        if (!t.mute && cl.length && cl.every((c) => c.stem !== "vocals")) { t.mute = true; muted++; }
+      }
     }
-    for (const stem of vocalsOnly ? ["vocals"] : ["drums", "bass", "other", "vocals"]) {
+    for (const stem of stemsToAdd) {
       const lines = stem === "vocals" ? (msg.retime || []) : [];
-      const t = { id: uid("t"), name: `${msg.title.replace(/^.*\(YuE2 /, "YuE2 ").replace(/\)$/, "")} · ${stem}${lines.length ? " (line by line)" : ""}`, role: "any", color: "#8e9198",
-                  gain_db: 0, pan: 0, mute: !vocalsOnly, solo: false, hpf: 0, lpf: 0, duck: 0, pocket: 0 };
+      const t = { id: uid("t"), name: `${shortTitle} · ${stem}${lines.length ? " (line by line)" : ""}`, role: "any",
+                  color: engine === "ACE" ? "#34c77b" : "#8e9198",
+                  gain_db: 0, pan: 0, mute: !playLive, solo: false, hpf: 0, lpf: 0, duck: 0, pocket: 0 };
       p.tracks.push(t);
       if (lines.length) {                    // each sung line of the take, moved to where the mix sings it (reimagine.retime_plan)
-        for (const l of lines) p.clips.push({ id: uid("c"), track: t.id, song: msg.sid, stem, start: l.start, src: l.src, len: l.len,
-                                              gain_db: 0, fade_in: 0.03, fade_out: 0.08, mute: false, rate: l.rate, pitch: 0, keep_pitch: true });
+        for (const l of lines) p.clips.push({ id: uid("c"), track: t.id, song: msg.sid, stem, start: startBeat + l.start,
+                                              src: l.src, len: l.len, gain_db: 0, fade_in: 0.03, fade_out: 0.08,
+                                              mute: false, rate: l.rate, pitch: 0, keep_pitch: true });
         continue;
       }
-      p.clips.push({ id: uid("c"), track: t.id, song: msg.sid, stem, start: 0, src: msg.first_beat, len: msg.n_beats,
-                     gain_db: 0, fade_in: 0, fade_out: 0.05, mute: false, rate: 1, pitch: 0, keep_pitch: true });
+      p.clips.push({ id: uid("c"), track: t.id, song: msg.sid, stem, start: startBeat, src: msg.first_beat || 0,
+                     len: msg.n_beats, gain_db: 0, fade_in: 0, fade_out: 0.05, mute: false, rate: 1, pitch: 0,
+                     keep_pitch: true });
     }
-  }, { label: "Add YuE2 take" });
+  }, { label: `Add ${engine} take` });
+
   const moved = (msg.retime || []).length ? ` - ${msg.retime.length} lines moved to where the mix sings them` : "";
-  toast(vocalsOnly ? `${msg.title}: its vocals are lined up${moved} and playing over your music${muted ? ` - the mix's ${muted} vocal track${muted > 1 ? "s are" : " is"} muted (unmute to compare)` : ""}`
-    : `${msg.title}: lined up and added on 4 muted tracks - unmute to hear it with the mix`, false, 9000);
+  const note = dropMode === "single"
+    ? `${msg.title}: dropped as an isolated ${singleStem} lane on the mix grid`
+    : dropMode === "instrumental"
+    ? `${msg.title}: new instrumental (drums/bass/other) is playing under your vocals${muted ? ` - ${muted} original music lane${muted > 1 ? "s" : ""} muted` : ""}`
+    : dropMode === "vocals"
+    ? `${msg.title}: its vocals are lined up${moved} and playing over your music${muted ? ` - the mix's ${muted} vocal track${muted > 1 ? "s are" : " is"} muted (unmute to compare)` : ""}`
+    : `${msg.title}: lined up and added on 4 muted tracks - unmute to hear it with the mix`;
+  toast(note, false, 9000);
 });

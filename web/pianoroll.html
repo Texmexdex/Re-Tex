@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Piano roll · Re-Tex</title>
+  <link rel="icon" type="image/png" href="/static/img/logo-32.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    html, body { height: 100%; }
+    .pr-body { display: flex; flex-direction: column; height: 100%; padding: 0 14px 12px; box-sizing: border-box; gap: 8px; overflow: hidden; }
+    .pr-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border-radius: 14px; background: var(--glass); border: 1px solid var(--line); }
+    .pr-bar label { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); font-size: 12px; }
+    .pr-bar .grp { display: inline-flex; gap: 3px; align-items: center; padding-right: 8px; border-right: 1px solid var(--line); }
+    .pr-bar .grp:last-child { border-right: 0; }
+    .pr-bar button.on { background: var(--accent); color: var(--accent-ink); }
+    #prRec.on { background: #e5484d; color: #fff; }
+    .pr-bar input[type=number] { width: 54px; }
+    #prWrap { position: relative; flex: 1; min-height: 200px; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: #0c0c0f; }
+    #prCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: default; outline: none; }
+    #prLane { position: absolute; left: 6px; bottom: 6px; width: 92px; font-size: 11px; z-index: 2; }
+    #prStatus { min-width: 120px; text-align: right; color: var(--dim); font-size: 12px; }
+    #prStatus.busy { color: var(--warn); }
+    .pr-help { color: var(--faint); font-size: 11px; }
+  </style>
+</head>
+<body class="se-body pr-body">
+  <header class="se-head">
+    <img class="se-logo" src="/static/img/logo-64.png" alt="">
+    <div class="se-title"><b id="prTitle">Piano roll</b><span id="prMeta" class="dim"></span></div>
+    <div class="se-actions">
+      <label class="dim" style="font-size:12px">Part <select id="prPart"></select></label>
+      <button id="prInst" class="small" title="Choose its sound (opens in the main window)">Instrument…</button>
+      <button id="prRename" class="small">Rename…</button>
+      <button id="prUndo" class="small" title="Undo (Ctrl+Z)" disabled>Undo</button>
+      <button id="prRedo" class="small" title="Redo (Ctrl+Y)" disabled>Redo</button>
+      <span id="prStatus">Saved</span>
+      <button id="prDone" class="small" title="Saves and closes">Done</button>
+    </div>
+  </header>
+
+  <div class="pr-bar">
+    <div class="grp">
+      <button id="prPlay" class="icon play" title="Play / stop from the cursor (Space). Click the ruler to move the cursor."><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.8v10.4L13 8z" fill="currentColor"/></svg></button>
+      <label title="Hear the other parts too"><input id="prAll" type="checkbox"> with the other parts</label>
+      <label title="Hear each note as you draw or move it"><input id="prHear" type="checkbox"> hear notes</label>
+    </div>
+    <div class="grp">
+      <label title="The computer keyboard plays the part's instrument while this window is in front: A W S E D F T G Y H U J K O L P ; ' are the notes, Z / X an octave down / up, C / V velocity down / up"><input id="prPad" type="checkbox" checked> ⌨ keys play notes</label>
+      <span id="prPadInfo" class="dim" style="font-size:11px;min-width:96px"></span>
+      <button id="prRec" class="small" title="Record what you play on the keys (R): at the playhead while it plays, or note by note at the cursor while stopped (the cursor moves on by the note length)">● Rec</button>
+    </div>
+    <div class="grp">
+      <button id="toolDraw" class="small" title="Draw (1): click to add a note, drag to set its length. Right-click deletes.">✎ Draw</button>
+      <button id="toolSel" class="small" title="Select (2): drag a box; drag notes to move, their edges to resize; Ctrl+drag copies">⬚ Select</button>
+      <button id="toolErase" class="small" title="Erase (3): click or drag across notes">⌫ Erase</button>
+    </div>
+    <div class="grp">
+      <label>Snap <select id="prSnap"></select></label>
+      <label title="Length of a drawn note">Length <select id="prLen"></select></label>
+      <label title="Velocity of drawn notes">Vel <input id="prVel" type="number" min="1" max="127" value="100"></label>
+    </div>
+    <div class="grp">
+      <button id="prQuant" class="small" title="Quantize the selection (or everything) to the snap (Q)">Quantize</button>
+      <label title="How far notes move toward the grid">Strength <input id="prQStr" type="number" min="0" max="100" step="10" value="100">%</label>
+      <label><input id="prQEnd" type="checkbox"> ends</label>
+    </div>
+    <div class="grp">
+      <button id="prDown12" class="small" title="Down an octave (Shift+↓)">−12</button>
+      <button id="prDown1" class="small" title="Down a semitone (↓)">−1</button>
+      <button id="prUp1" class="small" title="Up a semitone (↑)">+1</button>
+      <button id="prUp12" class="small" title="Up an octave (Shift+↑)">+12</button>
+    </div>
+    <div class="grp">
+      <button id="prHuman" class="small" title="Loosen timing and velocity a little">Humanize</button>
+      <button id="prLegato" class="small" title="Each note lasts until the next one">Legato</button>
+      <button id="prSame" class="small" title="Select every note on the same pitches">Same pitch</button>
+      <button id="prXfBtn" class="small" title="Splice and transform: rhythm or pitches from another part, groove, reverse, invert, half / double time, shuffle bars">Transform…</button>
+    </div>
+  </div>
+
+  <div id="prWrap">
+    <canvas id="prCanvas" tabindex="0"></canvas>
+    <select id="prLane" title="What the lane under the notes shows">
+      <option value="vel">Velocity</option><option value="pb">Pitch bend</option><option value="1">Mod (CC1)</option>
+      <option value="7">Volume (CC7)</option><option value="10">Pan (CC10)</option><option value="11">Expression (CC11)</option>
+      <option value="64">Sustain (CC64)</option><option value="74">Brightness (CC74)</option>
+    </select>
+  </div>
+  <div class="pr-help">Keys A–' play · Z/X octave · C/V velocity · R record · 1/2/3 tools · Q quantize · Wheel scrolls · Shift+wheel sideways ·
+    Ctrl+wheel zooms time · Alt+wheel zooms keys · Ctrl+A/C/X/V/D · Del deletes · ←/→ nudge · Alt = no snap · edits save themselves</div>
+
+  <dialog id="prXf" style="background:#17171c;color:var(--text);border:1px solid var(--line2);border-radius:14px;padding:16px 18px;min-width:520px">
+    <b style="font:700 15px var(--display)">Transform</b>
+    <span class="dim" style="font-size:12px;margin-left:6px" id="xfScope"></span>
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;margin-top:12px;font-size:13px">
+      <span class="dim">Do</span>
+      <select id="xfOp">
+        <option value="rhythm">take the rhythm of another part (keep these pitches)</option>
+        <option value="pitches">take the pitches of another part (keep this rhythm)</option>
+        <option value="groove">take the groove (swing / push) of another part</option>
+        <option value="reverse">reverse (play it backwards)</option>
+        <option value="invert">invert (upside down around its middle)</option>
+        <option value="half">half time (twice as long)</option>
+        <option value="double">double time (twice as fast)</option>
+        <option value="shuffle">shuffle its bars</option>
+        <option value="octaves">spread over octaves (random up / down)</option>
+      </select>
+      <span class="dim xfSrc">From</span>
+      <span class="xfSrc" style="display:flex;gap:6px"><select id="xfSong" style="flex:1;min-width:0"></select><select id="xfPart" style="flex:1;min-width:0"></select></span>
+      <span class="dim xfAmt">Amount</span>
+      <span class="xfAmt"><input id="xfAmt" type="number" min="0" max="100" step="10" value="100" style="width:64px"> %</span>
+      <span class="dim xfSeed">Seed</span>
+      <span class="xfSeed"><input id="xfSeed" type="number" min="1" value="1" style="width:64px"> <button id="xfReseed" class="small">↻</button></span>
+    </div>
+    <p id="xfHelp" class="dim" style="font-size:12px;max-width:520px"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+      <button id="xfCancel" class="small">Close</button><button id="xfGo" class="primary small">Apply</button>
+    </div>
+  </dialog>
+  <script type="module" src="/static/js/pianoroll.js"></script>
+</body>
+</html>

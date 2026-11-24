@@ -7,7 +7,7 @@ import { loadFolders, groups, createFolder, renameFolder, deleteFolder, moveToFo
 import { MODES, mode, setMode, sections, isCollapsed, toggleCollapsed as toggleSection, loadMeta, loadCompat, compareNow,
   guessGenres, listenSongs, dropOnSection, renameSection, editInfo, keyTile, artistOf, setMeta, SEPARATION, sepOf } from "./libgroups.js";
 import { openStemImport, stemPicker, looksLikeStems } from "./stemimport.js";
-import { songToolItems, openGrid } from "./songtools.js";
+import { songToolItems, openGrid, openTempoMap } from "./songtools.js";
 
 const list = document.getElementById("songList");
 const search = document.getElementById("libSearch");
@@ -182,7 +182,13 @@ export function render() {
     if (g.folder) head.onclick = () => toggleCollapsed(g.folder);
     head.oncontextmenu = (e) => {
       e.preventDefault();
-      if (!g.folder) { showMenu(e, [["New folder…", () => createFolder()]]); return; }
+      if (!g.folder) {
+        // MIDI files come in many at a time: one click files every unsorted one together
+        const mids = g.songs.filter((s) => s.kind === "midi").map((s) => s.id);
+        showMenu(e, [["New folder…", () => createFolder()],
+          ...(mids.length ? [[`Put the ${mids.length} MIDI song${mids.length > 1 ? "s" : ""} here in a new folder…`, () => createFolder(null, mids, "MIDI")]] : [])]);
+        return;
+      }
       showMenu(e, [
         ["Rename folder…", () => renameFolder(g.folder)],
         ["Move folder up", () => moveFolder(g.folder, -1)],
@@ -335,6 +341,7 @@ function card(s) {
     showMenu(e, [
       ...(ids.length === 1 ? [["Open", () => select(s.id)],
         ["Beat grid (the song's grid)…", () => openGrid(s.id, S.project?.clips.some((c) => c.song === s.id) ? S.project.id : null), "window"],
+        ...(String(s.id).startsWith("midi_") || String(s.id).startsWith("smp_") ? [] : [["Tempo map (find its grid structure)…", () => openTempoMap(s.id, S.project?.clips.some((c) => c.song === s.id) ? S.project.id : null), "window"]]),
         ["All its tools ▸", () => showMenu(e, songToolItems(s.id))],
         ["Find matches for this song", () => showMatches(s.id)], ["Rename…", () => rename(s)]] : []),
       [ids.length > 1 ? `Edit info for ${ids.length} songs…` : "Edit info (artist, album, genre, year)…", () => editInfo(ids)],
@@ -448,8 +455,18 @@ export function addDialog() {
 fileInput.onchange = () => { upload([...fileInput.files], fileInput.dataset.q || ""); fileInput.value = ""; };
 
 const AUDIO_RE = /\.(wav|flac|mp3|m4a|aac|ogg|opus|aiff?|mp4|webm|wma)$/i;
+const MIDI_RE = /\.(mid|midi|kar)$/i;
 
 export async function upload(files, quality = "") {
+  const mids = files.filter((f) => MIDI_RE.test(f.name));
+  if (mids.length) {                       // MIDI files become MIDI songs (their parts are the stems)
+    const fd = new FormData();
+    mids.forEach((f) => fd.append("files", f));
+    toast(`Importing ${mids.length} MIDI file${mids.length > 1 ? "s" : ""}…`);
+    api.post("/api/midi/upload", fd).catch((e) => toast("MIDI import failed: " + e.message, true));
+    files = files.filter((f) => !MIDI_RE.test(f.name));
+    if (!files.length) return;
+  }
   files = files.filter((f) => AUDIO_RE.test(f.name));
   if (!files.length) { toast("No audio files in that drop", true); return; }
   const fd = new FormData();
@@ -472,8 +489,10 @@ window.addEventListener("drop", (e) => {
   if (!e.dataTransfer.files.length) return;
   e.preventDefault(); dragDepth = 0; overlay.hidden = true;
   const files = [...e.dataTransfer.files].filter((f) => AUDIO_RE.test(f.name));
+  const mids = [...e.dataTransfer.files].filter((f) => MIDI_RE.test(f.name));
+  if (mids.length && !files.length) { upload(mids); return; }
   // stems (named drums / vocals / kick / acapella...): ask how to bring them in instead of separating each one
-  if (files.length && looksLikeStems(files.map((f) => f.name))) openStemImport({ files, fromDrop: true, onSeparate: () => upload(files) });
+  if (files.length && looksLikeStems(files.map((f) => f.name))) { if (mids.length) upload(mids); openStemImport({ files, fromDrop: true, onSeparate: () => upload(files) }); }
   else upload([...e.dataTransfer.files]);
 });
 

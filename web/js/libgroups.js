@@ -16,8 +16,9 @@ export const SEPARATION = {
   sw: { tag: "SW", name: "BS-Roformer SW", tip: "Stems: BS-Roformer SW for all four" },
   demucs: { tag: "DEMUCS", name: "Demucs", tip: "Stems: Demucs only (the oldest way) - right-click to re-separate" },
   imported: { tag: "STEMS", name: "Imported stems", tip: "Stems imported as they were - never separated here" },
+  midi: { tag: "MIDI", name: "MIDI", tip: "A MIDI song: its parts are played by instruments you pick (right-click → Instruments…)" },
 };
-export const sepOf = (s) => (SEPARATION[s.separation] ? s.separation : "demucs");
+export const sepOf = (s) => (s.kind === "midi" ? "midi" : SEPARATION[s.separation] ? s.separation : "demucs");
 export const EDITABLE = { artist: "artist", album: "album", genre: "genre", year: "year" };   // mode -> meta field
 const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const ls = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };

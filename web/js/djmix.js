@@ -15,7 +15,7 @@ const persist = () => { try { localStorage.setItem("djPicks", JSON.stringify(st)
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 function songPicker(el, key, none = "") {
-  const ready = [...S.songs.values()].filter((s) => s.status === "ready" && s.kind !== "sample").sort((x, y) => x.title.localeCompare(y.title));
+  const ready = [...S.songs.values()].filter((s) => s.status === "ready" && s.kind !== "sample" && s.kind !== "midi").sort((x, y) => x.title.localeCompare(y.title));
   el.innerHTML = `<input class="dj-q" placeholder="filter…" spellcheck="false"><select class="dj-sel" size="7"></select>`;
   const q = el.querySelector(".dj-q"), sel = el.querySelector(".dj-sel");
   const fill = () => {

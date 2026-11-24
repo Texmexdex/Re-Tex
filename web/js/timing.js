@@ -114,14 +114,14 @@ export function songMarks(info) {
   const L = landing(info);
   if (!L) return null;
   const hit = marksCache.get(info);
-  if (hit && hit.key === info.user_marks && hit.conf === info.beat_conf && hit.mus === info.mus_check) return hit.marks;
-  const m = info.user_marks || detectedMarks(info);
+  if (hit && hit.key === info.user_marks && hit.lm === info.locked_marks && hit.conf === info.beat_conf && hit.mus === info.mus_check) return hit.marks;
+  const m = info.locked_marks || info.user_marks || detectedMarks(info);
   const marks = {
     t: Float64Array.from(m.t), w: Float64Array.from(m.t, L.tw),
     down: Uint8Array.from(m.d, (x) => (x ? 1 : 0)), sure: Uint8Array.from(m.s || m.t.map(() => 1)),
     user: !!info.user_marks, bpb: m.bpb || info.bpb || 4,
   };
-  marksCache.set(info, { key: info.user_marks, conf: info.beat_conf, mus: info.mus_check, marks });
+  marksCache.set(info, { key: info.user_marks, lm: info.locked_marks, conf: info.beat_conf, mus: info.mus_check, marks });
   return marks;
 }
 
@@ -226,8 +226,16 @@ export function lockView(info) {
     while (hi - lo > 1) { const k = (lo + hi) >> 1; if (b[k] <= t) lo = k; else hi = k; }
     return lb[lo] + (t - b[lo]) * (lb[hi] - lb[lo]) / (b[hi] - b[lo]);
   };
+  let um = null, lm = null;
+  if (info.user_marks) {
+    const exact = lk.marks_t && lk.marks_t.length === info.user_marks.t.length ? lk.marks_t : null;
+    um = { ...info.user_marks, t: exact ? exact.slice() : info.user_marks.t.map(toLocked) };
+  } else if (lk.marks_t && lk.marks_t.length) {
+    const det = detectedMarks(info);
+    if (det.t.length === lk.marks_t.length) lm = { ...det, t: lk.marks_t.slice() };
+  }
   const view = { ...info, beats: lb, bpm: lk.bpm, duration: toLocked(info.duration || b[n - 1]),
-    user_marks: info.user_marks ? { ...info.user_marks, t: info.user_marks.t.map(toLocked) } : null };
+    user_marks: um, locked_marks: lm };
   lockCache.set(info, { lock: lk, um: info.user_marks, view });
   return view;
 }

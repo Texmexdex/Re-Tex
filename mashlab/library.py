@@ -58,6 +58,15 @@ def summary(info):
     if info.get("lock"):
         from . import lock
         out["lock_ok"] = lock.current(info) is not None          # a 🔒 locked version matching its marks exists
+        out["lock_kind"] = info["lock"].get("kind") or "marks"   # "smooth": it follows drift, not every mark (lock.py)
+        rep = lock.did(info) if out["lock_ok"] and not lock.is_take(info) else None
+        if rep and rep["sec20"] >= lock.WRONG_SEC:
+            out["lock_off"] = rep["sec20"]       # s of the song that lock plays over 20 % off (its button says so)
+        aud = info["lock"].get("audit") if out["lock_ok"] else None
+        if isinstance(aud, dict):
+            out["lock_audit"] = {k: aud.get(k) for k in ("status", "median_offset_ms", "max_offset_ms",
+                                                         "signed_median_ms", "active_windows", "bad_windows")
+                                 if k in aud}
     return out
 
 
@@ -242,7 +251,7 @@ def import_audio(path, title=None, quality=None):
             _set(sid, separation=quality)
             return summary(_finish(sid, job, stems))
         except Exception as e:
-            _set(sid, status="error", error=str(e))
+            _set(sid, status="error", error=_errtext(e))
             raise
 
     return sid, jobs.submit("import", title, work, ref=sid, gpu=True)
@@ -271,7 +280,7 @@ def ingest_inline(path, job, quality=None):
         _finish(sid, job, stems)
         return sid
     except Exception as e:
-        _set(sid, status="error", error=str(e))
+        _set(sid, status="error", error=_errtext(e))
         raise
 
 
@@ -304,32 +313,38 @@ def import_stems(files, title, source=""):
             _set(sid, separation="imported", stem_files={s: [Path(p).name for p in ps] for s, ps in files.items()})
             return summary(_finish(sid, job, stems))
         except Exception as e:
-            _set(sid, status="error", error=str(e))
+            _set(sid, status="error", error=_errtext(e))
             raise
 
     return sid, jobs.submit("import", title, work, ref=sid, gpu=True)
 
 
+def _errtext(e):
+    """An error as the library row shows it (a missing component's [component:key] mark left off: the dialog has it)."""
+    from . import components
+    return components.strip(str(e))
+
+
 def default_quality():
     """How new songs are separated unless you pick otherwise: the SW + Ultra blend (best in the Oct 2026 listening
-    test), else Ultra, else plain Demucs - whichever models are here."""
-    from .separate import sw_available, ultra_available
-    if ultra_available():
-        return "blend" if sw_available() else "ultra"
-    return "best"
+    test). Always the blend: when its models are missing the import stops and says which, with a download - it no
+    longer drops quietly to Ultra or plain Demucs (Nov 16: plain Demucs is the separation that lost sections)."""
+    return "blend"
 
 
 def run_separation(y, quality, progress):
     from . import separate as sep
+    from . import components
     if quality in ("sw", "blend"):         # BS-Roformer SW alone, or averaged with Ultra (right-click a song)
-        if not sep.sw_available():
-            raise RuntimeError(f"the BS-Roformer SW model isn't in mashup_lab/models ({sep.SW_CKPT})")
+        components.require("sep_sw")
         if quality == "blend":
-            if not sep.ultra_available():
-                raise RuntimeError("the SW + Ultra blend needs the Ultra (BS-Roformer vocal) model too")
+            components.require("sep_ultra")
+            components.require("demucs")
             return sep.separate_blend(y, progress)
         return sep.separate_sw(y, progress)
-    if quality == "ultra" and sep.ultra_available():
+    if quality == "ultra":                 # asked for Ultra: Ultra, or say what's missing (not plain Demucs instead)
+        components.require("sep_ultra")
+        components.require("demucs")
         return sep.separate_ultra(y, progress)
     # plain Demucs: its four stems don't add up to the song exactly either - share the leftover out
     return sep.spread_leftover(y, sep.separate(y, "best" if quality == "ultra" else quality, progress))
@@ -337,6 +352,8 @@ def run_separation(y, quality, progress):
 
 def reseparate(sid, quality="ultra"):
     """Redo a song's stems with a better separator. Keeps its beat grid, so projects stay lined up."""
+    if str(sid).startswith("midi_"):
+        raise ValueError("a MIDI song has no recording to separate - change its instruments instead")
     info = read(sid)
 
     def work(job):
@@ -363,7 +380,7 @@ def reseparate(sid, quality="ultra"):
             _set(sid, status="analyzing")
             new = analyze.analyze(d, stems, job.sub(0.75, 1.0, "analyzing: "), grid=grid)
         except Exception as e:
-            _set(sid, status="error", error=str(e))
+            _set(sid, status="error", error=_errtext(e))
             raise
         from . import warp
         warp.drop_song(sid)
@@ -426,6 +443,8 @@ def restore_missing(sid, backup_dir=None):
 def reanalyze(sid):
     """Redo the beat grid and all analysis. Saved projects that use the song are moved onto the new grid
     (clips keep their moment in the audio), and melody / warp caches are rebuilt."""
+    if str(sid).startswith("midi_"):
+        raise ValueError("a MIDI song's beat grid comes from its notes - nothing to analyze")
     info = read(sid)
 
     def work(job):
@@ -434,7 +453,7 @@ def reanalyze(sid):
         try:
             new = analyze.analyze(song_dir(sid), stems, job.sub(0, 1, "analyzing: "))
         except Exception as e:
-            _set(sid, status="error", error=str(e))
+            _set(sid, status="error", error=_errtext(e))
             raise
         return summary(apply_new_grid(sid, info, new))
 
@@ -538,7 +557,9 @@ def get_folders():
     d.setdefault("folders", [])
     d.setdefault("assign", {})
     ids = {f["id"] for f in d["folders"]}
-    d["assign"] = {s: f for s, f in d["assign"].items() if f in ids and (SONGS / s).exists()}
+    # song_dir, not SONGS / s: not every library item lives in songs/ (MIDI songs have their own folder - with
+    # SONGS / s every move of one into a folder was dropped the moment it was saved)
+    d["assign"] = {s: f for s, f in d["assign"].items() if f in ids and song_dir(s).exists()}
     return d
 
 
